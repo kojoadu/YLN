@@ -51,10 +51,21 @@ def send_verification_email(to_email: str, token: str) -> bool:
     """Send verification email and return success status."""
     subject = f"Verify your email - {APP_NAME}"
     body = (
-        f"Welcome to {APP_NAME}!\n\n"
-        "Use the verification code below to verify your email:\n"
-        f"{token}\n\n"
-        "This code expires in 24 hours."
+        f"🎉 Welcome to {APP_NAME}!\n\n"
+        "Thank you for joining the YLN Mentorship Platform community.\n\n"
+        "To complete your registration and start connecting with mentors, "
+        "please use this 6-digit verification code:\n\n"
+        f"    CODE: {token}\n\n"
+        "Enter this code on the verification page to activate your account.\n\n"
+        "⏰ This code expires in 24 hours for security.\n\n"
+        "Once verified, you'll be able to:\n"
+        "• Browse and connect with experienced mentors\n"
+        "• Complete your mentee profile\n" 
+        "• Schedule mentorship sessions\n"
+        "• Access exclusive resources and opportunities\n\n"
+        "If you didn't create this account, please ignore this email.\n\n"
+        "YLN Mentorship Platform\n"
+        "Empowering careers through meaningful connections"
     )
     return send_email(to_email, subject, body)
 

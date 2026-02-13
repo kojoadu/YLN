@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import random
 from typing import Optional, Dict, Any
 
 from app.config import Roles
@@ -48,7 +49,6 @@ def authenticate_user(email: str, password: str) -> tuple[bool, Optional[Dict[st
 
 def create_verification_token(user_id: int) -> str:
     """Generate a 6-digit verification code."""
-    import random
     token = str(random.randint(100000, 999999))
     db.create_verification_token(user_id, token)
     return token
