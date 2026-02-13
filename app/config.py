@@ -21,9 +21,24 @@ except ImportError:
         return os.getenv(key, default)
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = get_config_value("YLN_DB_PATH", str(DATA_DIR / "yln.db"))
+
+# Create data directory - use temp dir for cloud deployment if needed
+try:
+    DATA_DIR = BASE_DIR / "data"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Test if we can write to this directory
+    test_file = DATA_DIR / ".test"
+    test_file.write_text("test")
+    test_file.unlink()
+except (PermissionError, OSError):
+    # Fallback to temp directory for cloud deployments
+    import tempfile
+    DATA_DIR = Path(tempfile.gettempdir()) / "yln_data"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = get_config_value("YLN_DB_PATH", "")
+if not DB_PATH:
+    DB_PATH = str(DATA_DIR / "yln.db")
 
 SUPER_ADMIN_EMAIL = get_config_value("YLN_SUPER_ADMIN_EMAIL", "admin@yln.local")
 SUPER_ADMIN_PASSWORD = get_config_value("YLN_SUPER_ADMIN_PASSWORD", "admin1234")

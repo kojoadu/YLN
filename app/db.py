@@ -22,13 +22,42 @@ except ImportError:
 
 # Global gspread client (lazy initialized)
 _gspread_client = None
+_in_memory_fallback = False
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    global _in_memory_fallback
+    
+    try:
+        # Ensure the directory exists
+        import os
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        
+        if _in_memory_fallback:
+            # Use in-memory database if previous attempts failed
+            conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+            print("Using in-memory database fallback")
+        else:
+            conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+            
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        print(f"Trying to connect to: {DB_PATH}")
+        if not _in_memory_fallback:
+            print("Falling back to in-memory database")
+            _in_memory_fallback = True
+            # Try again with in-memory database
+            conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON;")
+            return conn
+        else:
+            raise
 
 
 @contextmanager
@@ -45,6 +74,8 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    global _in_memory_fallback
+    
     with get_conn() as conn:
         conn.executescript(
             """
@@ -137,7 +168,11 @@ def init_db() -> None:
             """
         )
 
+    # Always seed super admin, especially important for in-memory database
     seed_super_admin()
+    
+    if _in_memory_fallback:
+        print("⚠️ Database initialized in memory - data will not persist between sessions")
 
 
 def get_gspread_client():
