@@ -51,6 +51,15 @@ SMTP_FROM = get_config_value("YLN_SMTP_FROM", "noreply@yln.local")
 smtp_tls_val = get_config_value("YLN_SMTP_TLS", "true")
 SMTP_TLS = str(smtp_tls_val).lower() == "true"
 
+# Debug SMTP configuration (don't log passwords)
+print(f"SMTP Configuration loaded:")
+print(f"  HOST: {SMTP_HOST}")
+print(f"  PORT: {SMTP_PORT}")  
+print(f"  USER: {SMTP_USER}")
+print(f"  FROM: {SMTP_FROM}")
+print(f"  TLS: {SMTP_TLS}")
+print(f"  PASS: {'***' if SMTP_PASS else 'EMPTY'}")
+
 # Google Sheets configuration
 sheets_enabled_val = get_config_value("YLN_SHEETS_ENABLED", "false")
 SHEETS_ENABLED = str(sheets_enabled_val).lower() == "true"
