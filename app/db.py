@@ -550,11 +550,13 @@ def list_users() -> List[Dict[str, Any]]:
     """Get all users from the database."""
     # Get SQLite users first for reference
     sqlite_users = []
+    sqlite_users_map = {}
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, email, role, is_verified, created_at FROM users ORDER BY created_at DESC"
+            "SELECT id, email, password_hash, role, is_verified, created_at FROM users ORDER BY created_at DESC"
         ).fetchall()
         sqlite_users = [dict(row) for row in rows]
+        sqlite_users_map = {user['id']: user for user in sqlite_users}
     
     # If sheets enabled, try to get sheets data but validate against SQLite
     if SHEETS_ENABLED:
@@ -563,10 +565,16 @@ def list_users() -> List[Dict[str, Any]]:
             if sheets_users:
                 # Filter sheets users to only include those that exist in SQLite
                 sqlite_ids = {user['id'] for user in sqlite_users}
-                valid_sheets_users = [
-                    user for user in sheets_users 
-                    if user.get('id') in sqlite_ids
-                ]
+                valid_sheets_users = []
+                for user in sheets_users:
+                    user_id = user.get('id')
+                    if user_id in sqlite_ids:
+                        # Merge with SQLite data to ensure password_hash is included
+                        sqlite_user = sqlite_users_map[user_id]
+                        if 'password_hash' not in user or not user.get('password_hash'):
+                            user['password_hash'] = sqlite_user.get('password_hash', '')
+                        valid_sheets_users.append(user)
+                
                 print(f"Filtered {len(sheets_users)} sheets users to {len(valid_sheets_users)} valid users")
                 return valid_sheets_users if valid_sheets_users else sqlite_users
         except Exception as e:
