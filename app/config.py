@@ -1,33 +1,60 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Try to import streamlit for secrets, fall back to env vars
+try:
+    import streamlit as st
+    def get_config_value(key, default=""):
+        try:
+            return st.secrets.get(key, os.getenv(key, default))
+        except:
+            return os.getenv(key, default)
+except ImportError:
+    def get_config_value(key, default=""):
+        return os.getenv(key, default)
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = os.getenv("YLN_DB_PATH", str(DATA_DIR / "yln.db"))
+DB_PATH = get_config_value("YLN_DB_PATH", str(DATA_DIR / "yln.db"))
 
-SUPER_ADMIN_EMAIL = os.getenv("YLN_SUPER_ADMIN_EMAIL", "admin@yln.local")
-SUPER_ADMIN_PASSWORD = os.getenv("YLN_SUPER_ADMIN_PASSWORD", "admin1234")
+SUPER_ADMIN_EMAIL = get_config_value("YLN_SUPER_ADMIN_EMAIL", "admin@yln.local")
+SUPER_ADMIN_PASSWORD = get_config_value("YLN_SUPER_ADMIN_PASSWORD", "admin1234")
 
-SMTP_HOST = os.getenv("YLN_SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("YLN_SMTP_PORT", "587"))
-SMTP_USER = os.getenv("YLN_SMTP_USER", "")
-SMTP_PASS = os.getenv("YLN_SMTP_PASS", "")
-SMTP_FROM = os.getenv("YLN_SMTP_FROM", "noreply@yln.local")
-SMTP_TLS = os.getenv("YLN_SMTP_TLS", "true").lower() == "true"
+SMTP_HOST = get_config_value("YLN_SMTP_HOST", "")
+SMTP_PORT = int(get_config_value("YLN_SMTP_PORT", "587"))
+SMTP_USER = get_config_value("YLN_SMTP_USER", "")
+SMTP_PASS = get_config_value("YLN_SMTP_PASS", "")
+SMTP_FROM = get_config_value("YLN_SMTP_FROM", "noreply@yln.local")
+smtp_tls_val = get_config_value("YLN_SMTP_TLS", "true")
+SMTP_TLS = str(smtp_tls_val).lower() == "true"
 
 # Google Sheets configuration
-SHEETS_ENABLED = os.getenv("YLN_SHEETS_ENABLED", "false").lower() == "true"
-SHEETS_SPREADSHEET_ID = os.getenv("YLN_SHEETS_SPREADSHEET_ID", "")
-SHEETS_CREDENTIALS_JSON = os.getenv("YLN_SHEETS_CREDENTIALS_JSON", "")
-SHEETS_CREDENTIALS_PATH = os.getenv("YLN_SHEETS_CREDENTIALS_PATH", "")
-SHEETS_RETRY_ATTEMPTS = int(os.getenv("YLN_SHEETS_RETRY_ATTEMPTS", "3"))
+sheets_enabled_val = get_config_value("YLN_SHEETS_ENABLED", "false")
+SHEETS_ENABLED = str(sheets_enabled_val).lower() == "true"
+SHEETS_SPREADSHEET_ID = get_config_value("YLN_SHEETS_SPREADSHEET_ID", "")
+SHEETS_CREDENTIALS_JSON = get_config_value("YLN_SHEETS_CREDENTIALS_JSON", "")
+SHEETS_CREDENTIALS_PATH = get_config_value("YLN_SHEETS_CREDENTIALS_PATH", "")
+SHEETS_RETRY_ATTEMPTS = int(get_config_value("YLN_SHEETS_RETRY_ATTEMPTS", "3"))
+SHEETS_RETRY_DELAY = int(get_config_value("YLN_SHEETS_RETRY_DELAY", "1"))
+
+# Helper function to get Google service account credentials from Streamlit secrets
+def get_gcp_service_account_info():
+    """Get Google service account credentials from Streamlit secrets."""
+    try:
+        import streamlit as st
+        if "gcp_service_account" in st.secrets:
+            return dict(st.secrets["gcp_service_account"])
+        return None
+    except ImportError:
+        return None
 SHEETS_RETRY_DELAY = int(os.getenv("YLN_SHEETS_RETRY_DELAY", "60"))
 
 APP_NAME = "Yello Ladies Network Mentorship"

@@ -141,14 +141,27 @@ def get_gspread_client():
         return _gspread_client
         
     try:
-        if SHEETS_CREDENTIALS_JSON:
+        # Try to get credentials from Streamlit secrets first
+        from app.config import get_gcp_service_account_info
+        service_account_info = get_gcp_service_account_info()
+        
+        # Define the required scopes
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        if service_account_info:
+            # Use service account info from Streamlit secrets
+            credentials = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        elif SHEETS_CREDENTIALS_JSON:
             # Use JSON string from environment
             import json
             creds_dict = json.loads(SHEETS_CREDENTIALS_JSON)
-            credentials = Credentials.from_service_account_info(creds_dict)
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         elif SHEETS_CREDENTIALS_PATH:
             # Use JSON file path
-            credentials = Credentials.from_service_account_file(SHEETS_CREDENTIALS_PATH)
+            credentials = Credentials.from_service_account_file(SHEETS_CREDENTIALS_PATH, scopes=scopes)
         else:
             return None
             
