@@ -958,8 +958,25 @@ def admin_panel():
         st.info("No mentees found.")
 
 
+def is_mentee_profile_complete(user_id: int) -> bool:
+    """Check if mentee profile has required fields completed."""
+    mentee_profile = db.get_mentee_by_user_id(user_id)
+    if not mentee_profile:
+        return False
+    
+    # Check for required fields
+    required_fields = ["first_name", "last_name", "email"]
+    return all(mentee_profile.get(field) for field in required_fields)
+
+
 def mentee_profile_section(user):
-    st.subheader("Mentee Profile")
+    st.subheader("👤 Mentee Profile")
+    
+    # Check if this is a required completion
+    profile_complete = is_mentee_profile_complete(user["id"])
+    if not profile_complete:
+        st.info("📝 Please complete your profile to access mentor matching and other features.")
+    
     profile = db.get_mentee_by_user_id(user["id"]) or {}
     with st.form("mentee_profile"):
         col1, col2 = st.columns(2)
@@ -999,7 +1016,10 @@ def mentee_profile_section(user):
                         "profile_pic": profile_pic,
                     },
                 )
-                st.success("Profile saved.")
+                st.success("✅ Profile saved successfully! You can now access all features.")
+                # Update session state to allow navigation to Home
+                st.session_state["mentee_nav"] = "Home"
+                st.rerun()
 
 
 def mentorship_section(user):
@@ -1121,7 +1141,23 @@ def mentorship_section(user):
 
 
 def main():
-    db.init_db()
+    try:
+        db.init_db()
+        print("Database initialized successfully")
+        
+        # Verify super admin exists
+        from app.config import SUPER_ADMIN_EMAIL
+        admin_user = db.get_user_by_email(SUPER_ADMIN_EMAIL)
+        if admin_user:
+            print(f"Super admin verified: {SUPER_ADMIN_EMAIL}")
+        else:
+            print(f"Super admin not found, re-seeding: {SUPER_ADMIN_EMAIL}")
+            db.seed_super_admin()
+            
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        st.error("Database initialization failed. Please contact support.")
+        return
     init_state()
     restore_session()
     apply_custom_css()
@@ -1141,15 +1177,40 @@ def main():
         return
 
     user = st.session_state.user
+    
+    # Initialize navigation state before creating widgets
+    if user and user["role"] != Roles.ADMIN:
+        profile_complete = is_mentee_profile_complete(user["id"])
+        
+        # Set default navigation state
+        if "mentee_nav" not in st.session_state:
+            # Default to Profile if incomplete, Home if complete
+            st.session_state["mentee_nav"] = 1 if not profile_complete else 0
+    
     with st.sidebar:
         st.write(f"Logged in as {user['email']}")
         if user["role"] != Roles.ADMIN:
-            page = st.radio(
+            # Check profile completion status for navigation
+            profile_complete = is_mentee_profile_complete(user["id"])
+            
+            # Navigation options with indicators
+            nav_options = [
+                "Home" if profile_complete else "🔒 Home (Complete Profile First)",
+                "👤 Profile" + ("" if profile_complete else " ⚠️")
+            ]
+            
+            # Use the pre-set session state index
+            selected_index = st.radio(
                 "Navigation",
-                ["Home", "Profile"],
-                index=0,
+                options=range(len(nav_options)),
+                format_func=lambda i: nav_options[i],
+                index=st.session_state.get("mentee_nav", 0),
                 key="mentee_nav",
             )
+            
+            # Determine current page based on selected index
+            current_page = "Profile" if selected_index == 1 else "Home"
+            
         if st.button("Logout"):
             logout()
             st.rerun()
@@ -1162,6 +1223,7 @@ def main():
             mentee_profile.get("first_name") if mentee_profile else None
         )
         greeting_name = first_name or user["email"]
+        
         st.markdown(
             f"""
             <div class="yln-welcome">
@@ -1172,7 +1234,8 @@ def main():
             unsafe_allow_html=True,
         )
         st.divider()
-        if st.session_state.get("mentee_nav", "Home") == "Profile":
+        
+        if current_page == "Profile":
             mentee_profile_section(user)
         else:
             mentorship_section(user)
