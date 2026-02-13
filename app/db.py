@@ -1,12 +1,27 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
+import uuid
 
-from app.config import DB_PATH, Roles, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD
+from app.config import (
+    DB_PATH, Roles, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD,
+    SHEETS_ENABLED, SHEETS_SPREADSHEET_ID, SHEETS_CREDENTIALS_JSON, SHEETS_CREDENTIALS_PATH
+)
 from app.security import hash_password
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+
+# Global gspread client (lazy initialized)
+_gspread_client = None
 
 
 def _connect() -> sqlite3.Connection:
@@ -95,10 +110,221 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS pending_sheets_writes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
 
     seed_super_admin()
+
+
+def get_gspread_client():
+    """Get or create a gspread client using service account credentials."""
+    global _gspread_client
+    
+    if not GSPREAD_AVAILABLE or not SHEETS_ENABLED:
+        return None
+        
+    if _gspread_client is not None:
+        return _gspread_client
+        
+    try:
+        if SHEETS_CREDENTIALS_JSON:
+            # Use JSON string from environment
+            import json
+            creds_dict = json.loads(SHEETS_CREDENTIALS_JSON)
+            credentials = Credentials.from_service_account_info(creds_dict)
+        elif SHEETS_CREDENTIALS_PATH:
+            # Use JSON file path
+            credentials = Credentials.from_service_account_file(SHEETS_CREDENTIALS_PATH)
+        else:
+            return None
+            
+        _gspread_client = gspread.authorize(credentials)
+        return _gspread_client
+    except Exception as e:
+        print(f"Failed to initialize gspread client: {e}")
+        return None
+
+
+def get_worksheet(tab_name: str):
+    """Get a specific worksheet from the configured spreadsheet."""
+    client = get_gspread_client()
+    if not client or not SHEETS_SPREADSHEET_ID:
+        return None
+        
+    try:
+        spreadsheet = client.open_by_key(SHEETS_SPREADSHEET_ID)
+        
+        # Try to get existing worksheet or create it
+        try:
+            worksheet = spreadsheet.worksheet(tab_name)
+        except gspread.WorksheetNotFound:
+            # Create worksheet if it doesn't exist
+            worksheet = spreadsheet.add_worksheet(title=tab_name, rows=1000, cols=20)
+            
+        return worksheet
+    except Exception as e:
+        print(f"Failed to get worksheet '{tab_name}': {e}")
+        return None
+
+
+def enqueue_sheets_write(entity_type: str, operation: str, payload: dict):
+    """Enqueue a failed sheets write for retry later."""
+    idempotency_key = str(uuid.uuid4())
+    now = datetime.now().isoformat()
+    next_retry = (datetime.now() + timedelta(seconds=60)).isoformat()
+    
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO pending_sheets_writes 
+            (entity_type, operation, payload_json, idempotency_key, next_retry_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (entity_type, operation, json.dumps(payload), idempotency_key, next_retry, now, now))
+
+
+def process_pending_sheets_writes():
+    """Process pending sheets writes that are due for retry."""
+    if not SHEETS_ENABLED:
+        return
+        
+    now = datetime.now().isoformat()
+    
+    with get_conn() as conn:
+        cursor = conn.execute("""
+            SELECT id, entity_type, operation, payload_json, attempts
+            FROM pending_sheets_writes 
+            WHERE status = 'pending' AND next_retry_at <= ?
+            ORDER BY created_at
+            LIMIT 10
+        """, (now,))
+        
+        for row in cursor.fetchall():
+            try:
+                payload = json.loads(row['payload_json'])
+                
+                # Mark as processing
+                conn.execute("""
+                    UPDATE pending_sheets_writes 
+                    SET status = 'processing', updated_at = ?
+                    WHERE id = ?
+                """, (now, row['id']))
+                
+                # Try to write to sheets
+                success = write_to_sheets(row['entity_type'], row['operation'], payload)
+                
+                if success:
+                    # Mark as succeeded
+                    conn.execute("""
+                        DELETE FROM pending_sheets_writes WHERE id = ?
+                    """, (row['id'],))
+                else:
+                    # Mark as failed, schedule retry
+                    attempts = row['attempts'] + 1
+                    if attempts >= 5:  # Max attempts
+                        conn.execute("""
+                            UPDATE pending_sheets_writes 
+                            SET status = 'failed', attempts = ?, updated_at = ?
+                            WHERE id = ?
+                        """, (attempts, now, row['id']))
+                    else:
+                        next_retry = (datetime.now() + timedelta(seconds=60 * attempts)).isoformat()
+                        conn.execute("""
+                            UPDATE pending_sheets_writes 
+                            SET status = 'pending', attempts = ?, next_retry_at = ?, updated_at = ?
+                            WHERE id = ?
+                        """, (attempts, next_retry, now, row['id']))
+                        
+            except Exception as e:
+                # Mark as failed
+                conn.execute("""
+                    UPDATE pending_sheets_writes 
+                    SET status = 'failed', last_error = ?, updated_at = ?
+                    WHERE id = ?
+                """, (str(e), now, row['id']))
+
+
+def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
+    """Write data to Google Sheets."""
+    try:
+        worksheet = get_worksheet(entity_type)
+        if not worksheet:
+            return False
+            
+        if operation == 'insert':
+            # Get headers (first row)
+            headers = worksheet.row_values(1)
+            if not headers:
+                # Create headers based on payload keys
+                headers = list(payload.keys())
+                worksheet.update('1:1', [headers])
+            
+            # Append data row
+            row_data = [payload.get(header, '') for header in headers]
+            worksheet.append_row(row_data)
+            
+        elif operation == 'update':
+            # Find row by id and update
+            id_col = 1  # Assuming first column is ID
+            id_value = payload.get('id')
+            if not id_value:
+                return False
+                
+            # Find the row
+            try:
+                cell = worksheet.find(str(id_value))
+                if cell:
+                    # Get headers and update row
+                    headers = worksheet.row_values(1)
+                    row_data = [payload.get(header, '') for header in headers]
+                    worksheet.update(f'{cell.row}:{cell.row}', [row_data])
+                else:
+                    # ID not found, treat as insert
+                    return write_to_sheets(entity_type, 'insert', payload)
+            except gspread.exceptions.CellNotFound:
+                # ID not found, treat as insert
+                return write_to_sheets(entity_type, 'insert', payload)
+                
+        elif operation == 'delete':
+            # Find row by id and delete
+            id_value = payload.get('id')
+            if not id_value:
+                return False
+                
+            try:
+                cell = worksheet.find(str(id_value))
+                if cell:
+                    worksheet.delete_rows(cell.row)
+            except gspread.exceptions.CellNotFound:
+                pass  # Row already deleted
+                
+        return True
+        
+    except Exception as e:
+        print(f"Failed to write to sheets: {e}")
+        return False
+
+
+def dual_write(entity_type: str, operation: str, payload: dict):
+    """Perform dual write to SQLite and Google Sheets."""
+    # Always try to write to Sheets if enabled
+    if SHEETS_ENABLED:
+        success = write_to_sheets(entity_type, operation, payload)
+        if not success:
+            # Queue for retry
+            enqueue_sheets_write(entity_type, operation, payload)
 
 
 def seed_super_admin() -> None:
@@ -145,10 +371,64 @@ def create_user(email: str, password_hash: str, role: str) -> int:
             """,
             (email.lower(), password_hash, role, _now()),
         )
-        return int(cur.lastrowid)
+        user_id = int(cur.lastrowid)
+        
+        # Dual write to sheets
+        payload = {
+            'id': user_id,
+            'email': email.lower(),
+            'password_hash': password_hash,
+            'role': role,
+            'is_verified': 0,
+            'created_at': _now()
+        }
+        dual_write('users', 'insert', payload)
+        
+        return user_id
+
+
+def read_from_sheets(entity_type: str, filters: dict = None) -> list:
+    """Read data from Google Sheets with optional filters."""
+    try:
+        worksheet = get_worksheet(entity_type)
+        if not worksheet:
+            return []
+            
+        # Get all records
+        records = worksheet.get_all_records()
+        
+        if not filters:
+            return records
+            
+        # Apply filters
+        filtered = []
+        for record in records:
+            match = True
+            for key, value in filters.items():
+                if str(record.get(key, '')).lower() != str(value).lower():
+                    match = False
+                    break
+            if match:
+                filtered.append(record)
+                
+        return filtered
+        
+    except Exception as e:
+        print(f"Failed to read from sheets: {e}")
+        return []
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    # Try sheets first
+    if SHEETS_ENABLED:
+        try:
+            records = read_from_sheets('users', {'email': email.lower()})
+            if records:
+                return records[0]  # Return first match
+        except Exception as e:
+            print(f"Sheets read failed, falling back to SQLite: {e}")
+    
+    # Fallback to SQLite
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM users WHERE email = ?", (email.lower(),)
@@ -157,6 +437,16 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
 
 
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+    # Try sheets first
+    if SHEETS_ENABLED:
+        try:
+            records = read_from_sheets('users', {'id': str(user_id)})
+            if records:
+                return records[0]  # Return first match
+        except Exception as e:
+            print(f"Sheets read failed, falling back to SQLite: {e}")
+    
+    # Fallback to SQLite
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
@@ -165,6 +455,10 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
 def set_user_verified(user_id: int) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE users SET is_verified = 1 WHERE id = ?", (user_id,))
+    
+    # Dual write to sheets
+    payload = {'id': user_id, 'is_verified': 1}
+    dual_write('users', 'update', payload)
 
 
 def create_verification_token(user_id: int, token: str) -> None:

@@ -145,6 +145,8 @@ def auth_section():
         if st.button("Register", type="primary"):
             if password != confirm:
                 st.error("Passwords do not match.")
+            elif not email or not email.strip().lower().endswith("@mtn.com"):
+                st.error("Email must be an @mtn.com address.")
             elif len(password) < 6:
                 st.error("Password must be at least 6 characters.")
             else:
@@ -168,7 +170,44 @@ def auth_section():
 
 
 def admin_panel():
-    st.subheader("Admin: Load Mentors")
+    st.subheader("Admin Panel")
+    
+    # Google Sheets Status Section
+    st.subheader("Google Sheets Integration")
+    from app.config import SHEETS_ENABLED, SHEETS_SPREADSHEET_ID
+    
+    if SHEETS_ENABLED:
+        st.success("✅ Google Sheets integration is enabled")
+        if SHEETS_SPREADSHEET_ID:
+            st.info(f"📊 Spreadsheet ID: {SHEETS_SPREADSHEET_ID}")
+        
+        # Show pending writes count
+        with db.get_conn() as conn:
+            pending_count = conn.execute(
+                "SELECT COUNT(*) as count FROM pending_sheets_writes WHERE status = 'pending'"
+            ).fetchone()['count']
+            failed_count = conn.execute(
+                "SELECT COUNT(*) as count FROM pending_sheets_writes WHERE status = 'failed'"
+            ).fetchone()['count']
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Pending Writes", pending_count)
+        with col2:
+            st.metric("Failed Writes", failed_count)
+        with col3:
+            if st.button("🔄 Retry Failed Writes"):
+                try:
+                    db.process_pending_sheets_writes()
+                    st.success("Retry process completed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Retry failed: {e}")
+    else:
+        st.warning("⚠️ Google Sheets integration is disabled")
+    
+    st.divider()
+    st.subheader("Load Mentors")
     st.info(f"Seeded admin email: {SUPER_ADMIN_EMAIL}")
 
     with st.form("mentor_form"):
@@ -611,6 +650,14 @@ def main():
     init_state()
     restore_session()
     apply_custom_css()
+    
+    # Process pending sheets writes on app startup
+    try:
+        db.process_pending_sheets_writes()
+    except Exception as e:
+        # Don't let sheets processing break the app
+        print(f"Failed to process pending sheets writes: {e}")
+    
     header()
     st.divider()
 

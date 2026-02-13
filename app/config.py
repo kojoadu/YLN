@@ -22,6 +22,14 @@ SMTP_PASS = os.getenv("YLN_SMTP_PASS", "")
 SMTP_FROM = os.getenv("YLN_SMTP_FROM", "noreply@yln.local")
 SMTP_TLS = os.getenv("YLN_SMTP_TLS", "true").lower() == "true"
 
+# Google Sheets configuration
+SHEETS_ENABLED = os.getenv("YLN_SHEETS_ENABLED", "false").lower() == "true"
+SHEETS_SPREADSHEET_ID = os.getenv("YLN_SHEETS_SPREADSHEET_ID", "")
+SHEETS_CREDENTIALS_JSON = os.getenv("YLN_SHEETS_CREDENTIALS_JSON", "")
+SHEETS_CREDENTIALS_PATH = os.getenv("YLN_SHEETS_CREDENTIALS_PATH", "")
+SHEETS_RETRY_ATTEMPTS = int(os.getenv("YLN_SHEETS_RETRY_ATTEMPTS", "3"))
+SHEETS_RETRY_DELAY = int(os.getenv("YLN_SHEETS_RETRY_DELAY", "60"))
+
 APP_NAME = "Yello Ladies Network Mentorship"
 
 @dataclass(frozen=True)

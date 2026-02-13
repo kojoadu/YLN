@@ -9,6 +9,8 @@ from app.security import hash_password, verify_password
 
 
 def register_user(email: str, password: str) -> tuple[bool, str, Optional[int]]:
+    if not email or not email.strip().lower().endswith("@mtn.com"):
+        return False, "Email must be an @mtn.com address.", None
     existing = db.get_user_by_email(email)
     if existing:
         return False, "Email already registered.", None
