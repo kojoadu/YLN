@@ -171,3 +171,343 @@ div[style*="border-radius"][style*="padding"][style*="box-shadow"] {
 div[style*="border-radius"][style*="padding"][style*="box-shadow"] * {
   color: #ffbf00 !important;
 }
+
+/* ===== RESPONSIVE DESIGN - MOBILE FIRST ===== */
+
+/* Mobile base styles (default - phones) */
+.stApp {
+  padding: 0 !important;
+}
+
+.block-container {
+  padding: 1rem 0.5rem !important;
+  max-width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Ensure proper content ordering on mobile */
+.main .block-container > div {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.main .block-container > div > div {
+  order: initial !important;
+}
+
+/* Header responsive */
+.yln-header {
+  height: auto !important;
+  min-height: 120px !important;
+  padding: 1rem 0.75rem !important;
+  margin-bottom: 0.75rem !important;
+  text-align: center;
+  order: -999 !important; /* Ensure header is always first */
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+.yln-header__title {
+  font-size: 2rem !important;
+  line-height: 1.1 !important;
+}
+
+.yln-header__subtitle {
+  font-size: 1rem !important;
+}
+
+/* Welcome section responsive */
+.yln-welcome {
+  padding: 0.5rem 0.75rem !important;
+  margin: 0.5rem 0 !important;
+}
+
+.yln-welcome__title {
+  font-size: 1.5rem !important;
+}
+
+.yln-welcome__subtitle {
+  font-size: 0.9rem !important;
+}
+
+/* Buttons mobile optimized */
+.stButton > button {
+  width: 100% !important;
+  font-size: 0.9rem !important;
+  padding: 0.75rem 1rem !important;
+  margin: 0.25rem 0 !important;
+}
+
+/* Forms mobile optimized */
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea,
+.stSelectbox > div > div > input {
+  font-size: 16px !important; /* Prevent zoom on iOS */
+  padding: 0.75rem !important;
+}
+
+/* Data tables mobile */
+.stDataFrame {
+  font-size: 0.8rem !important;
+}
+
+/* Cards mobile optimized */
+.mentor-card {
+  padding: 1rem !important;
+  margin-bottom: 1rem !important;
+}
+
+.streamlit-card {
+  margin-bottom: 0.75rem !important;
+}
+
+/* Profile images mobile */
+.profile-image {
+  height: 120px !important;
+  width: 100% !important;
+  max-width: 200px !important;
+  margin: 0 auto !important;
+  display: block !important;
+}
+
+/* Sidebar mobile */
+[data-testid="stSidebar"] {
+  width: 280px !important;
+}
+
+/* Hide unnecessary margins */
+.element-container {
+  margin-bottom: 0.5rem !important;
+}
+
+/* Form spacing mobile */
+[data-testid="stForm"] {
+  border: none !important;
+  padding: 0.5rem !important;
+}
+
+/* Tab styling mobile */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0.25rem !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+  padding: 0.5rem 0.75rem !important;
+  font-size: 0.9rem !important;
+}
+
+/* ===== TABLET STYLES ===== */
+@media (min-width: 768px) {
+  .block-container {
+    padding: 1.5rem 1rem !important;
+  }
+  
+  .yln-header {
+    height: 160px !important;
+    padding: 1.25rem 1rem !important;
+  }
+  
+  .yln-header__title {
+    font-size: 3rem !important;
+  }
+  
+  .yln-header__subtitle {
+    font-size: 1.25rem !important;
+  }
+  
+  .stButton > button {
+    width: auto !important;
+    min-width: 120px !important;
+  }
+  
+  .profile-image {
+    height: 140px !important;
+    max-width: 220px !important;
+  }
+  
+  .mentor-card {
+    padding: 1.25rem !important;
+  }
+}
+
+/* ===== DESKTOP STYLES ===== */
+@media (min-width: 1024px) {
+  .block-container {
+    padding: 2rem 1.5rem !important;
+    max-width: 1200px !important;
+    margin: 0 auto !important;
+  }
+  
+  .yln-header {
+    height: 200px !important;
+    padding: 1.5rem 1.5rem !important;
+  }
+  
+  .yln-header__title {
+    font-size: 4rem !important;
+  }
+  
+  .yln-header__subtitle {
+    font-size: 1.5rem !important;
+  }
+  
+  .profile-image {
+    height: 160px !important;
+    max-width: 240px !important;
+  }
+  
+  .mentor-card {
+    padding: 1.5rem !important;
+  }
+}
+
+/* ===== MOBILE COLUMN FIXES ===== */
+@media (max-width: 767px) {
+  /* Ensure header stays at top */
+  .stApp > div:first-child {
+    order: -1 !important;
+  }
+  
+  /* Force single column on mobile for better UX */
+  .row-widget.stColumns {
+    flex-direction: column !important;
+  }
+  
+  .column {
+    width: 100% !important;
+    margin-bottom: 1rem !important;
+  }
+  
+  /* Maintain proper content order */
+  .element-container {
+    order: initial !important;
+  }
+  
+  /* Ensure main content container maintains flow order */
+  .main .block-container {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  
+  /* Fix for header appearing in correct position */
+  .yln-header {
+    order: -2 !important;
+    margin-top: 0 !important;
+  }
+  
+  /* Login/register section order */
+  [data-testid="stForm"] {
+    order: 1 !important;
+  }
+  
+  /* Ensure dividers don't interfere with ordering */
+  hr {
+    order: 0 !important;
+  }
+  
+  /* Auth section should come after header */
+  .element-container:has(.stTabs) {
+    order: 2 !important;
+  }
+}
+
+/* ===== TOUCH OPTIMIZATIONS ===== */
+@media (hover: none) and (pointer: coarse) {
+  /* Touch devices */
+  .stButton > button {
+    min-height: 44px !important; /* Apple's recommended touch target */
+    font-size: 1rem !important;
+  }
+  
+  .streamlit-card:hover {
+    transform: none !important; /* Disable hover effects on touch */
+  }
+  
+  .mentor-card:hover {
+    transform: none !important;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+  }
+}
+
+/* ===== ACCESSIBILITY IMPROVEMENTS ===== */
+/* Ensure text is readable on small screens */
+@media (max-width: 480px) {
+  body {
+    font-size: 16px !important;
+  }
+  
+  .stMarkdown p {
+    font-size: 0.9rem !important;
+    line-height: 1.4 !important;
+  }
+  
+  .stCaption {
+    font-size: 0.8rem !important;
+  }
+  
+  /* Make tabs more touch-friendly */
+  .stTabs [data-baseweb="tab"] {
+    min-height: 44px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  
+  /* Improve form spacing */
+  .stTextInput, .stTextArea, .stSelectbox {
+    margin-bottom: 1rem !important;
+  }
+  
+  /* Better metrics display on very small screens */
+  [data-testid="metric-container"] {
+    min-width: 0 !important;
+    flex: 1 !important;
+  }
+  
+  /* Compact header for very small screens */
+  .yln-header {
+    min-height: 100px !important;
+    padding: 0.75rem !important;
+  }
+  
+  .yln-header__title {
+    font-size: 1.75rem !important;
+  }
+  
+  .yln-header__subtitle {
+    font-size: 0.9rem !important;
+  }
+}
+
+/* ===== PERFORMANCE OPTIMIZATIONS ===== */
+/* Reduce animations on slower devices */
+@media (prefers-reduced-motion: reduce) {
+  .mentor-card {
+    transition: none !important;
+  }
+  
+  .mentor-card:hover {
+    transform: none !important;
+  }
+}
+
+/* ===== LANDSCAPE MOBILE OPTIMIZATION ===== */
+@media (max-width: 767px) and (orientation: landscape) {
+  .yln-header {
+    min-height: 80px !important;
+    padding: 0.5rem !important;
+  }
+  
+  .yln-header__title {
+    font-size: 1.5rem !important;
+  }
+  
+  .yln-header__subtitle {
+    font-size: 0.85rem !important;
+  }
+  
+  .block-container {
+    padding: 0.5rem !important;
+  }
+}

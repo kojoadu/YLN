@@ -457,7 +457,18 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         try:
             records = read_from_sheets('users', {'email': email.lower()})
             if records:
-                return records[0]  # Return first match
+                user_record = records[0]  # Get first match
+                
+                # Handle column name inconsistency between sheets and SQLite
+                # Ensure password_hash field exists, check for alternative names
+                if 'password_hash' not in user_record and 'password' in user_record:
+                    user_record['password_hash'] = user_record['password']
+                
+                # If we still don't have password_hash, fall back to SQLite
+                if 'password_hash' not in user_record:
+                    print(f"Password field missing from sheets for {email}, falling back to SQLite")
+                else:
+                    return user_record
         except Exception as e:
             print(f"Sheets read failed, falling back to SQLite: {e}")
     
@@ -485,13 +496,104 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+def list_users() -> List[Dict[str, Any]]:
+    """Get all users from the database."""
+    # Try sheets first
+    if SHEETS_ENABLED:
+        try:
+            records = read_from_sheets('users')
+            if records:
+                return records
+        except Exception as e:
+            print(f"Sheets read failed, falling back to SQLite: {e}")
+    
+    # Fallback to SQLite
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, email, role, is_verified, created_at FROM users ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def set_user_verified(user_id: int) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE users SET is_verified = 1 WHERE id = ?", (user_id,))
+        conn.commit()
     
     # Dual write to sheets
     payload = {'id': user_id, 'is_verified': 1}
     dual_write('users', 'update', payload)
+
+
+def update_user_role(user_id: int, role: str) -> bool:
+    """Update user role."""
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET role = ? WHERE id = ?", (role, user_id)
+            )
+            conn.commit()
+        
+        # Dual write to sheets
+        payload = {'id': user_id, 'role': role}
+        dual_write('users', 'update', payload)
+        return True
+    except Exception as e:
+        print(f"Failed to update user role: {e}")
+        return False
+
+
+def toggle_user_verification(user_id: int) -> bool:
+    """Toggle user verification status."""
+    try:
+        with get_conn() as conn:
+            # Get current status
+            current = conn.execute(
+                "SELECT is_verified FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if current:
+                new_status = 0 if current[0] else 1
+                conn.execute(
+                    "UPDATE users SET is_verified = ? WHERE id = ?", (new_status, user_id)
+                )
+                conn.commit()
+                
+                # Dual write to sheets
+                payload = {'id': user_id, 'is_verified': new_status}
+                dual_write('users', 'update', payload)
+                return True
+        return False
+    except Exception as e:
+        print(f"Failed to toggle user verification: {e}")
+        return False
+
+
+def delete_user(user_id: int) -> bool:
+    """Delete a user and all associated data."""
+    try:
+        with get_conn() as conn:
+            # Delete associated data first
+            conn.execute("DELETE FROM verification_tokens WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            
+            # Delete mentee profile if exists
+            mentee = conn.execute("SELECT id FROM mentees WHERE user_id = ?", (user_id,)).fetchone()
+            if mentee:
+                mentee_id = mentee[0]
+                conn.execute("DELETE FROM mentorships WHERE mentee_id = ?", (mentee_id,))
+                conn.execute("DELETE FROM sessions WHERE mentee_id = ?", (mentee_id,))
+                conn.execute("DELETE FROM mentees WHERE user_id = ?", (user_id,))
+            
+            # Delete the user
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+        
+        # Note: We don't dual-write deletes to prevent data loss
+        return True
+    except Exception as e:
+        print(f"Failed to delete user: {e}")
+        return False
 
 
 def create_verification_token(user_id: int, token: str) -> None:

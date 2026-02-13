@@ -258,35 +258,34 @@ def auth_section():
         st.write("Please check your inbox and enter the verification code below:")
         
         with st.form("email_verification"):
-            token = st.text_input("Verification Code", placeholder="Enter the code from your email")
+            token = st.text_input("Verification Code", placeholder="Enter 6-digit code from email")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.form_submit_button("Verify Email", type="primary"):
-                    if not token:
-                        st.error("Please enter the verification code.")
+            # Mobile-optimized button layout
+            if st.form_submit_button("✅ Verify Email", type="primary", use_container_width=True):
+                if not token:
+                    st.error("Please enter the verification code.")
+                else:
+                    ok, msg = auth.verify_email_token(token)
+                    if ok:
+                        st.success(msg)
+                        del st.session_state.pending_verification
+                        st.balloons()
+                        st.rerun()
                     else:
-                        ok, msg = auth.verify_email_token(token)
-                        if ok:
-                            st.success(msg)
-                            del st.session_state.pending_verification
-                            st.balloons()
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                        st.error(msg)
             
-            with col2:
-                if st.form_submit_button("Resend Email"):
-                    try:
-                        new_token = auth.create_verification_token(user_id)
-                        if send_verification_email(user_email, new_token):
-                            st.success("Verification email resent!")
-                        else:
-                            st.error("Failed to resend email.")
-                    except Exception as e:
-                        st.error("Error resending email.")
+            if st.form_submit_button("📧 Resend Email", use_container_width=True):
+                try:
+                    new_token = auth.create_verification_token(user_id)
+                    if send_verification_email(user_email, new_token):
+                        st.success("Verification email resent!")
+                    else:
+                        st.error("Failed to resend email.")
+                except Exception as e:
+                    st.error("Error resending email.")
         
-        if st.button("← Back to Registration"):
+        # Back button
+        if st.button("← Back to Registration", use_container_width=True):
             del st.session_state.pending_verification
             st.rerun()
         return
@@ -295,29 +294,29 @@ def auth_section():
     login_tab, register_tab = st.tabs(["Login", "Register"])
 
     with login_tab:
-        email = st.text_input("Email", key="login_email")
-        password = st.text_input("Password", type="password", key="login_password")
+        email = st.text_input("Email", key="login_email", placeholder="your.email@mtn.com")
+        password = st.text_input("Password", type="password", key="login_password", placeholder="Enter your password")
         
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            if st.button("Login", type="primary"):
-                ok, user, msg = auth.authenticate_user(email, password)
-                if ok:
-                    set_user(user)
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-        with col2:
-            if st.button("🔑 Forgot Password?"):
-                st.query_params["page"] = "forgot_password"
+        # Mobile-optimized button layout
+        if st.button("🔓 Login", type="primary", use_container_width=True):
+            ok, user, msg = auth.authenticate_user(email, password)
+            if ok:
+                set_user(user)
+                st.success(msg)
                 st.rerun()
+            else:
+                st.error(msg)
+        
+        # Forgot password as a smaller secondary button
+        if st.button("🔑 Forgot Password?", use_container_width=True):
+            st.query_params["page"] = "forgot_password"
+            st.rerun()
 
     with register_tab:
-        email = st.text_input("Email", key="reg_email")
-        password = st.text_input("Password", type="password", key="reg_password")
-        confirm = st.text_input("Confirm Password", type="password", key="reg_confirm")
-        if st.button("Register", type="primary"):
+        email = st.text_input("Email", key="reg_email", placeholder="your.email@mtn.com")
+        password = st.text_input("Password", type="password", key="reg_password", placeholder="Minimum 6 characters")
+        confirm = st.text_input("Confirm Password", type="password", key="reg_confirm", placeholder="Confirm your password")
+        if st.button("📝 Create Account", type="primary", use_container_width=True):
             if password != confirm:
                 st.error("Passwords do not match.")
             elif not email or not email.strip().lower().endswith("@mtn.com"):
@@ -362,46 +361,53 @@ def admin_panel():
                 "SELECT COUNT(*) as count FROM pending_sheets_writes WHERE status = 'failed'"
             ).fetchone()['count']
         
-        col1, col2, col3 = st.columns(3)
+        # Mobile-responsive metrics
+        st.subheader("Sync Status")
+        
+        # Stack metrics vertically on mobile for better readability
+        col1, col2, col3 = st.columns([1, 1, 1])
         with col1:
-            st.metric("Pending Writes", pending_count)
+            st.metric("Pending", pending_count)
         with col2:
-            st.metric("Failed Writes", failed_count)
+            st.metric("Failed", failed_count)
         with col3:
-            if st.button("🔄 Retry Failed Writes"):
+            if st.button("🔄 Retry", use_container_width=True, help="Retry failed writes"):
                 try:
                     db.process_pending_sheets_writes()
-                    st.success("Retry process completed!")
+                    st.success("Retry completed!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Retry failed: {e}")
         
-        # Sync functionality
-        st.subheader("Database Synchronization")
-        st.write("Manually sync all SQLite data to Google Sheets")
+        # Sync functionality with mobile-optimized layout
+        st.subheader("🔄 Database Sync")
+        st.caption("Sync SQLite data with Google Sheets")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📊 Full Sync to Sheets", help="Sync all SQLite data to Google Sheets"):
-                with st.spinner("Syncing data to Google Sheets..."):
-                    result = db.sync_all_to_sheets()
-                    
-                if result['success']:
-                    st.success("Sync completed successfully!")
-                    
-                    # Show detailed results
-                    results = result['results']
-                    for entity, stats in results.items():
-                        synced = stats['synced']
-                        errors = stats['errors']
-                        if synced > 0 or errors > 0:
-                            st.info(f"{entity.title()}: {synced} synced, {errors} errors")
-                else:
-                    st.error(f"Sync failed: {result.get('message', 'Unknown error')}")
-                    
-        with col2:
-            if st.button("🗑️ Clear Sheets Data", help="Clear all Google Sheets data (except headers)"):
-                if st.checkbox("I understand this will clear all Google Sheets data"):
+        # Full-width buttons for mobile
+        if st.button("📊 Full Sync to Sheets", type="primary", use_container_width=True, help="Sync all data to Google Sheets"):
+            with st.spinner("Syncing data to Google Sheets..."):
+                result = db.sync_all_to_sheets()
+                
+            if result['success']:
+                st.success("✅ Sync completed!")
+                
+                # Show detailed results in compact format
+                results = result['results']
+                for entity, stats in results.items():
+                    synced = stats['synced']
+                    errors = stats['errors']
+                    if synced > 0 or errors > 0:
+                        st.info(f"**{entity.title()}:** {synced} synced, {errors} errors")
+            else:
+                st.error(f"❌ Sync failed: {result.get('message', 'Unknown error')}")
+        
+        # Clear sheets section with mobile optimization
+        st.write("")
+        with st.expander("🗑️ Clear Sheets Data", expanded=False):
+            st.warning("⚠️ This will clear ALL Google Sheets data (except headers)")
+            
+            if st.button("🗑️ Clear All Sheets Data", use_container_width=True):
+                if st.checkbox("✅ I understand this will clear all data", key="clear_confirm"):
                     with st.spinner("Clearing Google Sheets data..."):
                         entities = ['users', 'mentors', 'mentees', 'mentorships', 'sessions']
                         cleared_count = 0
@@ -411,34 +417,269 @@ def admin_panel():
                                 cleared_count += 1
                         
                         if cleared_count == len(entities):
-                            st.success(f"Cleared data from {cleared_count} worksheets")
+                            st.success(f"✅ Cleared data from {cleared_count} worksheets")
                         else:
-                            st.warning(f"Cleared {cleared_count}/{len(entities)} worksheets")
+                            st.warning(f"⚠️ Cleared {cleared_count}/{len(entities)} worksheets")
+                else:
+                    st.info("Please confirm to proceed")
     else:
         st.warning("⚠️ Google Sheets integration is disabled")
     
     st.divider()
-    st.subheader("Load Mentors")
-    st.info(f"Seeded admin email: {SUPER_ADMIN_EMAIL}")
-
-    with st.form("mentor_form"):
+    st.subheader("👥 Users Management")
+    
+    # Initialize session state for user management
+    if 'selected_user_for_edit' not in st.session_state:
+        st.session_state.selected_user_for_edit = None
+    if 'show_user_form' not in st.session_state:
+        st.session_state.show_user_form = False
+    
+    # Desktop vs Mobile Layout
+    users = db.list_users()
+    
+    if users:
+        # Display metrics
+        total_users = len(users)
+        verified_users = len([u for u in users if u.get('is_verified', False)])
+        admin_users = len([u for u in users if u.get('role') == 'admin'])
+        
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+        with col1:
+            st.metric("Total Users", total_users)
+        with col2:
+            st.metric("Verified", verified_users)
+        with col3:
+            st.metric("Admins", admin_users)
+        with col4:
+            if st.button("➕ Add New User", type="primary", use_container_width=True):
+                st.session_state.show_user_form = True
+                st.session_state.selected_user_for_edit = None
+                st.rerun()
+        
+        # Search and filter
+        st.write("")
+        search_col, filter_col = st.columns([2, 1])
+        with search_col:
+            search_term = st.text_input("🔍 Search users by email", placeholder="Enter email to search...")
+        with filter_col:
+            role_filter = st.selectbox("Filter by role", ["All", "admin", "user"], index=0)
+        
+        # Filter users based on search and role
+        filtered_users = users
+        if search_term:
+            filtered_users = [u for u in filtered_users if search_term.lower() in u.get('email', '').lower()]
+        if role_filter != "All":
+            filtered_users = [u for u in filtered_users if u.get('role', '') == role_filter]
+        
+        # Desktop view with action buttons
+        st.write("")
+        
+        # Create enhanced table with actions
+        if filtered_users:
+            for idx, user in enumerate(filtered_users):
+                with st.container():
+                    user_col, status_col, role_col, created_col, actions_col = st.columns([3, 1, 1, 2, 2])
+                    
+                    with user_col:
+                        st.write(f"**{user['email']}**")
+                        st.caption(f"ID: {user['id']}")
+                    
+                    with status_col:
+                        status = "✅ Verified" if user.get('is_verified') else "❌ Unverified"
+                        st.write(status)
+                    
+                    with role_col:
+                        st.write(user.get('role', 'user').title())
+                    
+                    with created_col:
+                        if user.get('created_at'):
+                            created_date = pd.to_datetime(user['created_at']).strftime('%Y-%m-%d %H:%M')
+                            st.write(created_date)
+                    
+                    with actions_col:
+                        action_col1, action_col2, action_col3 = st.columns(3)
+                        
+                        with action_col1:
+                            if st.button("✏️", key=f"edit_{user['id']}_{idx}", help="Edit user"):
+                                st.session_state.selected_user_for_edit = user['id']
+                                st.session_state.show_user_form = True
+                                st.rerun()
+                        
+                        with action_col2:
+                            verify_label = "❌" if user.get('is_verified') else "✅"
+                            verify_help = "Unverify user" if user.get('is_verified') else "Verify user"
+                            if st.button(verify_label, key=f"verify_{user['id']}_{idx}", help=verify_help):
+                                if db.toggle_user_verification(user['id']):
+                                    st.success(f"User verification status updated!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to update verification status")
+                        
+                        with action_col3:
+                            if user.get('role') != 'admin' or len([u for u in users if u.get('role') == 'admin']) > 1:
+                                if st.button("🗑️", key=f"delete_{user['id']}_{idx}", help="Delete user"):
+                                    if st.session_state.get(f"confirm_delete_{user['id']}_{idx}", False):
+                                        if db.delete_user(user['id']):
+                                            st.success(f"User {user['email']} deleted successfully!")
+                                            st.rerun()
+                                        else:
+                                            st.error("Failed to delete user")
+                                    else:
+                                        st.session_state[f"confirm_delete_{user['id']}_{idx}"] = True
+                                        st.warning(f"⚠️ Click delete again to confirm removal of {user['email']}")
+                    
+                    # Add confirmation reset
+                    if st.session_state.get(f"confirm_delete_{user['id']}_{idx}", False):
+                        if st.button(f"Cancel deletion of {user['email']}", key=f"cancel_delete_{user['id']}_{idx}"):
+                            st.session_state[f"confirm_delete_{user['id']}_{idx}"] = False
+                            st.rerun()
+                    
+                    st.divider()
+        else:
+            st.info("No users match the current filters.")
+        
+        # Export options
+        st.write("**📊 Export Options:**")
         col1, col2 = st.columns(2)
         with col1:
-            first_name = st.text_input("First Name")
-            last_name = st.text_input("Last Name")
-            phone = st.text_input("Phone Number")
-            email = st.text_input("Email Address")
+            users_df = pd.DataFrame(filtered_users)
+            if 'created_at' in users_df.columns:
+                users_df['created_at'] = pd.to_datetime(users_df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
+            if 'is_verified' in users_df.columns:
+                users_df['is_verified'] = users_df['is_verified'].map({1: 'Verified', 0: 'Unverified', True: 'Verified', False: 'Unverified'})
+            
+            st.download_button(
+                "📄 Download Filtered Users (CSV)",
+                data=users_df.to_csv(index=False),
+                file_name="yln_users_filtered.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
         with col2:
-            work_profile = st.text_input("Work Profile")
-            profile_pic_url = st.text_input("Profile Pic URL")
+            users_xlsx = io.BytesIO()
+            users_df.to_excel(users_xlsx, index=False, engine='openpyxl')
+            st.download_button(
+                "📊 Download Filtered Users (XLSX)",
+                data=users_xlsx.getvalue(),
+                file_name="yln_users_filtered.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    else:
+        st.info("No users found in the system.")
+        if st.button("➕ Add First User", type="primary", use_container_width=True):
+            st.session_state.show_user_form = True
+            st.session_state.selected_user_for_edit = None
+            st.rerun()
+    
+    # User Creation/Edit Form
+    if st.session_state.show_user_form:
+        st.write("")
+        edit_user = None
+        if st.session_state.selected_user_for_edit:
+            edit_user = db.get_user_by_id(st.session_state.selected_user_for_edit)
+        
+        form_title = "✏️ Edit User" if edit_user else "➕ Add New User"
+        st.subheader(form_title)
+        
+        with st.form("user_management_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                email = st.text_input(
+                    "Email Address",
+                    value=edit_user.get('email', '') if edit_user else '',
+                    placeholder="user@mtn.com",
+                    disabled=bool(edit_user)  # Can't change email for existing users
+                )
+            
+            with col2:
+                role = st.selectbox(
+                    "Role",
+                    ["user", "admin"],
+                    index=1 if (edit_user and edit_user.get('role') == 'admin') else 0
+                )
+            
+            if not edit_user:
+                password = st.text_input("Password", type="password", placeholder="Minimum 6 characters")
+                confirm_password = st.text_input("Confirm Password", type="password")
+            
+            verified = st.checkbox(
+                "Email Verified",
+                value=bool(edit_user.get('is_verified', False)) if edit_user else True
+            )
+            
+            submit_col1, submit_col2 = st.columns([1, 1])
+            
+            with submit_col1:
+                if st.form_submit_button("💾 Save User", type="primary", use_container_width=True):
+                    if edit_user:
+                        # Update existing user
+                        success = True
+                        if db.update_user_role(edit_user['id'], role):
+                            if verified != bool(edit_user.get('is_verified', False)):
+                                success = db.toggle_user_verification(edit_user['id'])
+                            if success:
+                                st.success(f"User {email} updated successfully!")
+                                st.session_state.show_user_form = False
+                                st.session_state.selected_user_for_edit = None
+                                st.rerun()
+                            else:
+                                st.error("Failed to update user verification status")
+                        else:
+                            st.error("Failed to update user role")
+                    else:
+                        # Create new user
+                        if not email or not email.endswith('@mtn.com'):
+                            st.error("Email must be an @mtn.com address.")
+                        elif not password or len(password) < 6:
+                            st.error("Password must be at least 6 characters.")
+                        elif password != confirm_password:
+                            st.error("Passwords do not match.")
+                        else:
+                            from app.security import hash_password
+                            password_hash = hash_password(password)
+                            user_id = db.create_user(email, password_hash, role)
+                            if user_id:
+                                if verified:
+                                    db.set_user_verified(user_id)
+                                st.success(f"User {email} created successfully!")
+                                st.session_state.show_user_form = False
+                                st.rerun()
+                            else:
+                                st.error("Failed to create user. Email may already exist.")
+            
+            with submit_col2:
+                if st.form_submit_button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_user_form = False
+                    st.session_state.selected_user_for_edit = None
+                    st.rerun()
+    
+    st.divider()
+    st.subheader("➕ Add Mentors")
+    st.caption(f"Admin: {SUPER_ADMIN_EMAIL}")
+
+    with st.form("mentor_form"):
+        # Mobile-optimized form layout
+        first_name = st.text_input("First Name", placeholder="Enter first name")
+        last_name = st.text_input("Last Name", placeholder="Enter last name")
+        phone = st.text_input("Phone Number", placeholder="Optional contact number")
+        email = st.text_input("Email Address", placeholder="mentor@mtn.com")
+        work_profile = st.text_input("Work Profile", placeholder="Job title or expertise area")
+        bio = st.text_area("Bio", placeholder="Brief description about the mentor...")
+        
+        # Profile picture options in expandable section
+        with st.expander("📸 Profile Picture (Optional)", expanded=False):
+            profile_pic_url = st.text_input("Profile Pic URL", placeholder="https://example.com/image.jpg")
+            st.write("**OR**")
             profile_pic_file = st.file_uploader(
                 "Upload Profile Pic",
                 type=["png", "jpg", "jpeg"],
                 key="mentor_profile_pic",
+                help="Max file size: 5MB"
             )
-        bio = st.text_area("Bio")
 
-        submitted = st.form_submit_button("Add Mentor", type="primary")
+        submitted = st.form_submit_button("➕ Add Mentor", type="primary", use_container_width=True)
         if submitted:
             if not first_name or not last_name or not email:
                 st.error("First name, last name, and email are required.")
@@ -460,22 +701,26 @@ def admin_panel():
                 st.success("Mentor added.")
 
     st.divider()
-    st.subheader("Exports")
+    st.subheader("📊 Exports")
+    users = db.list_users()
     mentors = db.list_mentors()
     mentees = db.list_mentees()
     mentorships = db.list_mentorships()
     pairings = db.list_mentor_pairs()
     export_buffer = io.BytesIO()
     with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
+        pd.DataFrame(users).to_excel(writer, index=False, sheet_name="users")
         pd.DataFrame(mentors).to_excel(writer, index=False, sheet_name="mentors")
         pd.DataFrame(mentees).to_excel(writer, index=False, sheet_name="mentees")
         pd.DataFrame(mentorships).to_excel(writer, index=False, sheet_name="mentorships")
         pd.DataFrame(pairings).to_excel(writer, index=False, sheet_name="pairings")
     st.download_button(
-        "Download all data (XLSX)",
+        "📥 Download all data (XLSX)",
         data=export_buffer.getvalue(),
-        file_name="yln_data.xlsx",
+        file_name="yln_complete_data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        help="Downloads all system data including users, mentors, mentees, mentorships, and pairings"
     )
 
     st.divider()
@@ -780,9 +1025,15 @@ def mentorship_section(user):
 
     if st.session_state.mentee_view == "grid":
         st.caption("Browse mentors and open a profile to select.")
-        cols = st.columns(3)
+        
+        # Responsive columns based on screen size
+        # Mobile: 1 column, Tablet: 2 columns, Desktop: 3 columns
+        num_cols = 1 if len(mentors) < 3 else 3
+        cols = st.columns(num_cols)
+        
         for idx, mentor in enumerate(mentors):
-            col = cols[idx % 3]
+            col_idx = idx % num_cols
+            col = cols[col_idx]
             with col:
                 # Create card content
                 card_text = f"""
@@ -814,29 +1065,42 @@ def mentorship_section(user):
             return
 
         st.subheader("Mentor Profile")
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            if mentor.get("profile_pic"):
-                safe_image(mentor["profile_pic"], width=240)
-        with col2:
-            st.markdown(
-                f"**{mentor['first_name']} {mentor['last_name']}**"
-            )
-            st.write(mentor.get("work_profile") or "")
-            st.write(mentor.get("bio") or "")
-            st.write(f"Email: {mentor.get('email')}")
-            st.write(f"Phone: {mentor.get('phone') or ''}")
+        
+        # Mobile-first responsive layout
+        # Stack everything vertically on mobile, side-by-side on larger screens
+        if mentor.get("profile_pic"):
+            # Center the image on mobile
+            col_img = st.columns([1, 2, 1])[1]  # Center column
+            with col_img:
+                safe_image(mentor["profile_pic"], width=200)
+            st.write("")  # Add some space
+        
+        # Profile information
+        st.markdown(f"### {mentor['first_name']} {mentor['last_name']}")
+        if mentor.get("work_profile"):
+            st.markdown(f"**{mentor.get('work_profile')}**")
+        if mentor.get("bio"):
+            st.markdown(f"*{mentor.get('bio')}*")
+        
+        # Contact info in expandable section for cleaner mobile view
+        with st.expander("📧 Contact Information", expanded=False):
+            st.write(f"**Email:** {mentor.get('email')}")
+            if mentor.get('phone'):
+                st.write(f"**Phone:** {mentor.get('phone')}")
 
-        col_a, col_b = st.columns([1, 2])
-        with col_a:
-            if st.button("Back to mentors"):
+        # Action buttons - stack vertically on mobile
+        st.write("")
+        col_back, col_select = st.columns([1, 2])
+        with col_back:
+            if st.button("← Back to mentors", use_container_width=True):
                 st.session_state.mentee_view = "grid"
                 st.session_state.selected_mentor_id = None
                 st.rerun()
-        with col_b:
+        with col_select:
             if st.button(
-                f"Select {mentor['first_name']} {mentor['last_name']}",
+                f"✅ Select {mentor['first_name']} {mentor['last_name']}",
                 type="primary",
+                use_container_width=True,
             ):
                 ok, msg = db.assign_mentor(mentee["id"], mentor["id"])
                 if ok:

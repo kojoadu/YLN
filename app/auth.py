@@ -22,9 +22,15 @@ def authenticate_user(email: str, password: str) -> tuple[bool, Optional[Dict[st
     user = db.get_user_by_email(email)
     if not user:
         return False, None, "Invalid email or password."
-    if not verify_password(password, user["password_hash"]):
+    
+    # Handle missing password_hash field
+    password_hash = user.get("password_hash") or user.get("password")
+    if not password_hash:
         return False, None, "Invalid email or password."
-    if not user["is_verified"]:
+    
+    if not verify_password(password, password_hash):
+        return False, None, "Invalid email or password."
+    if not user.get("is_verified", False):
         return False, None, "Email not verified. Please verify your email."
     return True, user, "Authenticated."
 
