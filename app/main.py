@@ -45,6 +45,96 @@ def safe_image(image_ref: str, width: int) -> None:
     except Exception:
         st.warning("Profile image not available.")
 
+
+def password_reset_request_form():
+    """Display password reset request form."""
+    st.markdown("### 🔑 Reset Your Password")
+    
+    with st.form("password_reset_request"):
+        st.write("Enter your email address and we'll send you a reset link.")
+        email = st.text_input("Email Address")
+        submitted = st.form_submit_button("Send Reset Link")
+        
+        if submitted:
+            if not email:
+                st.error("Please enter your email address.")
+                return
+                
+            # Validate email domain
+            if not email.endswith("@mtn.com"):
+                st.error("Please use your @mtn.com email address.")
+                return
+                
+            # Check if user exists
+            user = db.get_user_by_email(email)
+            if not user:
+                # Don't reveal whether email exists for security
+                st.success("If an account with that email exists, you'll receive a reset link shortly.")
+                return
+                
+            # Create reset token and send email
+            try:
+                reset_token = db.create_password_reset_token(user['id'])
+                if auth.send_password_reset_email(email, reset_token):
+                    st.success("Password reset link sent! Please check your email.")
+                else:
+                    st.error("Failed to send reset email. Please try again later.")
+            except Exception as e:
+                st.error("An error occurred. Please try again later.")
+                print(f"Password reset error: {e}")
+
+
+def password_reset_form(token: str):
+    """Display password reset form with token validation."""
+    # Validate token
+    token_data = db.get_password_reset_token(token)
+    if not token_data:
+        st.error("Invalid or expired reset link. Please request a new password reset.")
+        if st.button("Request New Reset Link"):
+            st.query_params["page"] = "forgot_password"
+            st.rerun()
+        return
+        
+    st.markdown("### 🔑 Set New Password")
+    st.write(f"Setting new password for: **{token_data['email']}**")
+    
+    with st.form("password_reset"):
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        submitted = st.form_submit_button("Update Password")
+        
+        if submitted:
+            if not new_password or not confirm_password:
+                st.error("Please fill in both password fields.")
+                return
+                
+            if new_password != confirm_password:
+                st.error("Passwords don't match.")
+                return
+                
+            if len(new_password) < 6:
+                st.error("Password must be at least 6 characters long.")
+                return
+                
+            # Update password
+            if db.use_password_reset_token(token, new_password):
+                st.success("Password updated successfully! You can now sign in with your new password.")
+                st.balloons()
+                
+                # Clear URL parameters and redirect to login after delay
+                st.markdown(
+                    """
+                    <script>
+                    setTimeout(function() {
+                        window.location.href = window.location.origin;
+                    }, 3000);
+                    </script>
+                    """, 
+                    unsafe_allow_html=True
+                )
+            else:
+                st.error("Failed to update password. Please try again.")
+
 from app import auth, db
 from app import sessions
 from app.emailer import (
@@ -123,20 +213,105 @@ def header():
 
 
 def auth_section():
+    query_params = st.query_params
+    
+    # Handle password reset request page
+    if query_params.get("page") == "forgot_password":
+        password_reset_request_form()
+        if st.button("← Back to Login"):
+            st.query_params.clear()
+            st.rerun()
+        return
+    
+    # Handle password reset form with token
+    if query_params.get("page") == "reset_password" and "token" in query_params:
+        password_reset_form(query_params["token"])
+        if st.button("← Back to Login"):
+            st.query_params.clear()
+            st.rerun()
+        return
+    
+    # Handle email verification
+    if "token" in query_params and "page" not in query_params:
+        token = query_params["token"]
+        ok, msg = auth.verify_email_token(token)
+        if ok:
+            st.success(f"✅ {msg}")
+            st.balloons()
+        else:
+            st.error(f"❌ {msg}")
+        
+        if st.button("Continue to Login"):
+            st.query_params.clear()
+            st.rerun()
+        return
+    
+    # Check if user just registered and needs to verify email
+    if 'pending_verification' in st.session_state:
+        st.markdown("### 📧 Check Your Email")
+        
+        user_email = st.session_state.pending_verification['email']
+        user_id = st.session_state.pending_verification['user_id']
+        
+        st.success("Account created successfully!")
+        st.info(f"A verification email has been sent to **{user_email}**")
+        st.write("Please check your inbox and enter the verification code below:")
+        
+        with st.form("email_verification"):
+            token = st.text_input("Verification Code", placeholder="Enter the code from your email")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.form_submit_button("Verify Email", type="primary"):
+                    if not token:
+                        st.error("Please enter the verification code.")
+                    else:
+                        ok, msg = auth.verify_email_token(token)
+                        if ok:
+                            st.success(msg)
+                            del st.session_state.pending_verification
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            
+            with col2:
+                if st.form_submit_button("Resend Email"):
+                    try:
+                        new_token = auth.create_verification_token(user_id)
+                        if send_verification_email(user_email, new_token):
+                            st.success("Verification email resent!")
+                        else:
+                            st.error("Failed to resend email.")
+                    except Exception as e:
+                        st.error("Error resending email.")
+        
+        if st.button("← Back to Registration"):
+            del st.session_state.pending_verification
+            st.rerun()
+        return
+    
     st.subheader("Login / Register")
-    login_tab, register_tab, verify_tab = st.tabs(["Login", "Register", "Verify Email"])
+    login_tab, register_tab = st.tabs(["Login", "Register"])
 
     with login_tab:
         email = st.text_input("Email", key="login_email")
         password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Login", type="primary"):
-            ok, user, msg = auth.authenticate_user(email, password)
-            if ok:
-                set_user(user)
-                st.success(msg)
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            if st.button("Login", type="primary"):
+                ok, user, msg = auth.authenticate_user(email, password)
+                if ok:
+                    set_user(user)
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with col2:
+            if st.button("🔑 Forgot Password?"):
+                st.query_params["page"] = "forgot_password"
                 st.rerun()
-            else:
-                st.error(msg)
 
     with register_tab:
         email = st.text_input("Email", key="reg_email")
@@ -153,20 +328,17 @@ def auth_section():
                 ok, msg, user_id = auth.register_user(email, password)
                 if ok and user_id:
                     token = auth.create_verification_token(user_id)
-                    send_verification_email(email, token)
-                    st.success(msg)
-                    st.info("Verification email sent. Check your inbox for the code.")
+                    if send_verification_email(email, token):
+                        # Set verification pending state
+                        st.session_state.pending_verification = {
+                            'email': email,
+                            'user_id': user_id
+                        }
+                        st.rerun()
+                    else:
+                        st.warning("Account created but failed to send verification email.")
                 else:
                     st.error(msg)
-
-    with verify_tab:
-        token = st.text_input("Verification Code")
-        if st.button("Verify Email", type="primary"):
-            ok, msg = auth.verify_email_token(token)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
 
 
 def admin_panel():
@@ -203,6 +375,45 @@ def admin_panel():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Retry failed: {e}")
+        
+        # Sync functionality
+        st.subheader("Database Synchronization")
+        st.write("Manually sync all SQLite data to Google Sheets")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📊 Full Sync to Sheets", help="Sync all SQLite data to Google Sheets"):
+                with st.spinner("Syncing data to Google Sheets..."):
+                    result = db.sync_all_to_sheets()
+                    
+                if result['success']:
+                    st.success("Sync completed successfully!")
+                    
+                    # Show detailed results
+                    results = result['results']
+                    for entity, stats in results.items():
+                        synced = stats['synced']
+                        errors = stats['errors']
+                        if synced > 0 or errors > 0:
+                            st.info(f"{entity.title()}: {synced} synced, {errors} errors")
+                else:
+                    st.error(f"Sync failed: {result.get('message', 'Unknown error')}")
+                    
+        with col2:
+            if st.button("🗑️ Clear Sheets Data", help="Clear all Google Sheets data (except headers)"):
+                if st.checkbox("I understand this will clear all Google Sheets data"):
+                    with st.spinner("Clearing Google Sheets data..."):
+                        entities = ['users', 'mentors', 'mentees', 'mentorships', 'sessions']
+                        cleared_count = 0
+                        
+                        for entity in entities:
+                            if db.clear_sheets_data(entity):
+                                cleared_count += 1
+                        
+                        if cleared_count == len(entities):
+                            st.success(f"Cleared data from {cleared_count} worksheets")
+                        else:
+                            st.warning(f"Cleared {cleared_count}/{len(entities)} worksheets")
     else:
         st.warning("⚠️ Google Sheets integration is disabled")
     

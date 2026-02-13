@@ -67,6 +67,16 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                used INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS mentors (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 first_name TEXT NOT NULL,
@@ -272,8 +282,11 @@ def process_pending_sheets_writes():
 def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
     """Write data to Google Sheets."""
     try:
+        print(f"Writing to sheets - Type: {entity_type}, Operation: {operation}, Data: {list(payload.keys())}")
+        
         worksheet = get_worksheet(entity_type)
         if not worksheet:
+            print(f"Failed to get worksheet for {entity_type}")
             return False
             
         if operation == 'insert':
@@ -283,16 +296,19 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
                 # Create headers based on payload keys
                 headers = list(payload.keys())
                 worksheet.update('1:1', [headers])
+                print(f"Created headers for {entity_type}: {headers}")
             
             # Append data row
             row_data = [payload.get(header, '') for header in headers]
             worksheet.append_row(row_data)
+            print(f"Appended row to {entity_type}: {row_data}")
             
         elif operation == 'update':
             # Find row by id and update
             id_col = 1  # Assuming first column is ID
             id_value = payload.get('id')
             if not id_value:
+                print(f"No ID found in payload for update operation")
                 return False
                 
             # Find the row
@@ -303,11 +319,14 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
                     headers = worksheet.row_values(1)
                     row_data = [payload.get(header, '') for header in headers]
                     worksheet.update(f'{cell.row}:{cell.row}', [row_data])
+                    print(f"Updated row {cell.row} in {entity_type}")
                 else:
                     # ID not found, treat as insert
+                    print(f"ID {id_value} not found, treating as insert")
                     return write_to_sheets(entity_type, 'insert', payload)
-            except gspread.exceptions.CellNotFound:
+            except Exception as e:
                 # ID not found, treat as insert
+                print(f"Error finding ID {id_value}, treating as insert: {e}")
                 return write_to_sheets(entity_type, 'insert', payload)
                 
         elif operation == 'delete':
@@ -320,13 +339,14 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
                 cell = worksheet.find(str(id_value))
                 if cell:
                     worksheet.delete_rows(cell.row)
-            except gspread.exceptions.CellNotFound:
-                pass  # Row already deleted
+                    print(f"Deleted row {cell.row} from {entity_type}")
+            except Exception as e:
+                print(f"Error deleting from {entity_type}: {e}")
                 
         return True
         
     except Exception as e:
-        print(f"Failed to write to sheets: {e}")
+        print(f"Failed to write to sheets ({entity_type}): {e}")
         return False
 
 
@@ -779,3 +799,227 @@ def assign_mentor(mentee_id: int, mentor_id: int) -> tuple[bool, str]:
             return True, "Mentor assigned."
         except sqlite3.IntegrityError:
             return False, "Mentor is no longer available or mentee already assigned."
+
+
+def create_password_reset_token(user_id: int) -> str:
+    """Create a new password reset token for a user."""
+    import secrets
+    import datetime
+    
+    token = secrets.token_urlsafe(32)
+    # Token expires in 1 hour
+    expires_at = (datetime.datetime.now() + datetime.timedelta(hours=1)).isoformat()
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Mark any existing tokens as used
+        cursor.execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0",
+            (user_id,)
+        )
+        
+        # Create new token
+        cursor.execute(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, token, expires_at, datetime.datetime.now().isoformat())
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def get_password_reset_token(token: str) -> dict | None:
+    """Get password reset token details if valid."""
+    import datetime
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(
+            """SELECT prt.*, u.email 
+               FROM password_reset_tokens prt 
+               JOIN users u ON prt.user_id = u.id
+               WHERE prt.token = ? AND prt.used = 0""",
+            (token,)
+        )
+        result = cursor.fetchone()
+        
+        if not result:
+            return None
+            
+        # Check if token is expired
+        expires_at = datetime.datetime.fromisoformat(result[4])
+        if datetime.datetime.now() > expires_at:
+            return None
+            
+        return {
+            'id': result[0],
+            'user_id': result[1],
+            'token': result[2],
+            'expires_at': result[4],
+            'email': result[6]
+        }
+    finally:
+        conn.close()
+
+
+def use_password_reset_token(token: str, new_password: str) -> bool:
+    """Use password reset token to update user password."""
+    import bcrypt
+    
+    token_data = get_password_reset_token(token)
+    if not token_data:
+        return False
+        
+    hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Update password
+        cursor.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hashed_password.decode('utf-8'), token_data['user_id'])
+        )
+        
+        # Mark token as used
+        cursor.execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE token = ?",
+            (token,)
+        )
+        
+        conn.commit()
+        
+        # Try dual write to Google Sheets
+        if GSPREAD_AVAILABLE and SHEETS_ENABLED:
+            user = get_user_by_id(token_data['user_id'])
+            if user:
+                dual_write('users', 'update', {
+                    'id': user['id'],
+                    'email': user['email'],
+                    'first_name': user.get('first_name', ''),
+                    'last_name': user.get('last_name', ''),
+                    'password_hash': hashed_password.decode('utf-8'),
+                    'is_verified': user['is_verified'],
+                    'created_at': user['created_at']
+                })
+        
+        return True
+    finally:
+        conn.close()
+
+
+def sync_all_to_sheets() -> dict:
+    """Sync all data from SQLite to Google Sheets."""
+    if not GSPREAD_AVAILABLE or not SHEETS_ENABLED:
+        return {'success': False, 'message': 'Google Sheets not available'}
+    
+    results = {
+        'users': {'synced': 0, 'errors': 0},
+        'mentors': {'synced': 0, 'errors': 0},
+        'mentees': {'synced': 0, 'errors': 0},
+        'mentorships': {'synced': 0, 'errors': 0},
+        'sessions': {'synced': 0, 'errors': 0}
+    }
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Sync users
+        cursor.execute("SELECT * FROM users")
+        users = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for user in users:
+            try:
+                if write_to_sheets('users', 'insert', user):
+                    results['users']['synced'] += 1
+                else:
+                    results['users']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing user {user.get('id')}: {e}")
+                results['users']['errors'] += 1
+        
+        # Sync mentors
+        cursor.execute("SELECT * FROM mentors")
+        mentors = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for mentor in mentors:
+            try:
+                if write_to_sheets('mentors', 'insert', mentor):
+                    results['mentors']['synced'] += 1
+                else:
+                    results['mentors']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing mentor {mentor.get('id')}: {e}")
+                results['mentors']['errors'] += 1
+        
+        # Sync mentees
+        cursor.execute("SELECT * FROM mentees")
+        mentees = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for mentee in mentees:
+            try:
+                if write_to_sheets('mentees', 'insert', mentee):
+                    results['mentees']['synced'] += 1
+                else:
+                    results['mentees']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing mentee {mentee.get('id')}: {e}")
+                results['mentees']['errors'] += 1
+        
+        # Sync mentorships
+        cursor.execute("SELECT * FROM mentorships")
+        mentorships = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for mentorship in mentorships:
+            try:
+                if write_to_sheets('mentorships', 'insert', mentorship):
+                    results['mentorships']['synced'] += 1
+                else:
+                    results['mentorships']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing mentorship {mentorship.get('id')}: {e}")
+                results['mentorships']['errors'] += 1
+        
+        # Sync sessions
+        cursor.execute("SELECT * FROM sessions")
+        sessions = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for session in sessions:
+            try:
+                if write_to_sheets('sessions', 'insert', session):
+                    results['sessions']['synced'] += 1
+                else:
+                    results['sessions']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing session {session.get('id')}: {e}")
+                results['sessions']['errors'] += 1
+        
+        return {'success': True, 'results': results}
+        
+    except Exception as e:
+        print(f"Error during sync: {e}")
+        return {'success': False, 'message': str(e)}
+    finally:
+        conn.close()
+
+
+def clear_sheets_data(entity_type: str) -> bool:
+    """Clear all data from a Google Sheets worksheet (except headers)."""
+    try:
+        worksheet = get_worksheet(entity_type)
+        if not worksheet:
+            return False
+            
+        # Get all values
+        all_values = worksheet.get_all_values()
+        if len(all_values) > 1:  # More than just headers
+            # Clear all rows except header
+            worksheet.delete_rows(2, len(all_values))
+            
+        return True
+        
+    except Exception as e:
+        print(f"Error clearing sheets data for {entity_type}: {e}")
+        return False
