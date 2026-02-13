@@ -29,25 +29,31 @@ def _connect() -> sqlite3.Connection:
     global _in_memory_fallback
     
     try:
-        # Ensure the directory exists
-        import os
-        db_dir = os.path.dirname(DB_PATH)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
-        
         if _in_memory_fallback:
             # Use in-memory database if previous attempts failed
             conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
             print("Using in-memory database fallback")
         else:
+            # Ensure the directory exists
+            import os
+            db_dir = os.path.dirname(DB_PATH)
+            if db_dir and not os.path.exists(db_dir):
+                try:
+                    os.makedirs(db_dir, exist_ok=True)
+                    print(f"Created database directory: {db_dir}")
+                except Exception as e:
+                    print(f"Failed to create database directory {db_dir}: {e}")
+            
+            print(f"Attempting to connect to database: {DB_PATH}")
             conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+            print(f"Successfully connected to database: {DB_PATH}")
             
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
     except Exception as e:
         print(f"Database connection error: {e}")
-        print(f"Trying to connect to: {DB_PATH}")
+        print(f"Attempted database path: {DB_PATH}")
         if not _in_memory_fallback:
             print("Falling back to in-memory database")
             _in_memory_fallback = True
@@ -55,6 +61,7 @@ def _connect() -> sqlite3.Connection:
             conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON;")
+            print("Successfully connected to in-memory database")
             return conn
         else:
             raise
@@ -385,6 +392,14 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
         return False
 
 
+def delete_from_sheets(entity_type: str, record: dict) -> bool:
+    """Delete a record from Google Sheets."""
+    if not SHEETS_ENABLED:
+        return False
+    
+    return write_to_sheets(entity_type, 'delete', record)
+
+
 def dual_write(entity_type: str, operation: str, payload: dict):
     """Perform dual write to SQLite and Google Sheets."""
     # Always try to write to Sheets if enabled
@@ -533,21 +548,32 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
 
 def list_users() -> List[Dict[str, Any]]:
     """Get all users from the database."""
-    # Try sheets first
-    if SHEETS_ENABLED:
-        try:
-            records = read_from_sheets('users')
-            if records:
-                return records
-        except Exception as e:
-            print(f"Sheets read failed, falling back to SQLite: {e}")
-    
-    # Fallback to SQLite
+    # Get SQLite users first for reference
+    sqlite_users = []
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, email, role, is_verified, created_at FROM users ORDER BY created_at DESC"
         ).fetchall()
-        return [dict(row) for row in rows]
+        sqlite_users = [dict(row) for row in rows]
+    
+    # If sheets enabled, try to get sheets data but validate against SQLite
+    if SHEETS_ENABLED:
+        try:
+            sheets_users = read_from_sheets('users')
+            if sheets_users:
+                # Filter sheets users to only include those that exist in SQLite
+                sqlite_ids = {user['id'] for user in sqlite_users}
+                valid_sheets_users = [
+                    user for user in sheets_users 
+                    if user.get('id') in sqlite_ids
+                ]
+                print(f"Filtered {len(sheets_users)} sheets users to {len(valid_sheets_users)} valid users")
+                return valid_sheets_users if valid_sheets_users else sqlite_users
+        except Exception as e:
+            print(f"Sheets read failed, falling back to SQLite: {e}")
+    
+    # Return SQLite data as fallback
+    return sqlite_users
 
 
 def set_user_verified(user_id: int) -> None:
@@ -606,6 +632,17 @@ def toggle_user_verification(user_id: int) -> bool:
 def delete_user(user_id: int) -> bool:
     """Delete a user and all associated data."""
     try:
+        # Get user info before deletion for sheets sync
+        user_to_delete = None
+        with get_conn() as conn:
+            user_row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user_row:
+                user_to_delete = dict(user_row)
+        
+        if not user_to_delete:
+            print(f"User {user_id} not found")
+            return False
+        
         with get_conn() as conn:
             # Delete associated data first
             conn.execute("DELETE FROM verification_tokens WHERE user_id = ?", (user_id,))
@@ -624,7 +661,14 @@ def delete_user(user_id: int) -> bool:
             conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             conn.commit()
         
-        # Note: We don't dual-write deletes to prevent data loss
+        # Sync deletion to Google Sheets
+        if SHEETS_ENABLED:
+            try:
+                delete_from_sheets('users', user_to_delete)
+                print(f"Successfully deleted user {user_id} from both SQLite and Sheets")
+            except Exception as e:
+                print(f"User deleted from SQLite but failed to sync deletion to Sheets: {e}")
+        
         return True
     except Exception as e:
         print(f"Failed to delete user: {e}")
