@@ -339,6 +339,19 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
                 headers = list(payload.keys())
                 worksheet.update('1:1', [headers])
                 print(f"Created headers for {entity_type}: {headers}")
+            else:
+                # Check if any new columns are needed (like password_hash)
+                payload_keys = set(payload.keys())
+                existing_headers = set(headers)
+                missing_headers = payload_keys - existing_headers
+                
+                if missing_headers:
+                    # Add missing headers to the sheet
+                    headers_to_add = list(missing_headers)
+                    new_headers = headers + headers_to_add
+                    worksheet.update('1:1', [new_headers])
+                    headers = new_headers
+                    print(f"Added new columns to {entity_type}: {headers_to_add}")
             
             # Append data row
             row_data = [payload.get(header, '') for header in headers]
@@ -357,8 +370,21 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
             try:
                 cell = worksheet.find(str(id_value))
                 if cell:
-                    # Get headers and update row
+                    # Get headers and check for missing columns
                     headers = worksheet.row_values(1)
+                    payload_keys = set(payload.keys())
+                    existing_headers = set(headers)
+                    missing_headers = payload_keys - existing_headers
+                    
+                    if missing_headers:
+                        # Add missing headers to the sheet
+                        headers_to_add = list(missing_headers)
+                        new_headers = headers + headers_to_add
+                        worksheet.update('1:1', [new_headers])
+                        headers = new_headers
+                        print(f"Added new columns to {entity_type}: {headers_to_add}")
+                    
+                    # Update row
                     row_data = [payload.get(header, '') for header in headers]
                     worksheet.update(f'{cell.row}:{cell.row}', [row_data])
                     print(f"Updated row {cell.row} in {entity_type}")
