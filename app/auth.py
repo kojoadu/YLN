@@ -21,7 +21,18 @@ def register_user(email: str, password: str) -> tuple[bool, str, Optional[int]]:
 def authenticate_user(email: str, password: str) -> tuple[bool, Optional[Dict[str, Any]], str]:
     user = db.get_user_by_email(email)
     if not user:
-        return False, None, "Invalid email or password."
+        # Special fallback for super admin if user doesn't exist in database
+        from app.config import SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD
+        if email == SUPER_ADMIN_EMAIL and password == SUPER_ADMIN_PASSWORD:
+            # Re-seed super admin if missing (useful for in-memory database)
+            try:
+                db.seed_super_admin()
+                user = db.get_user_by_email(email)
+            except Exception as e:
+                print(f"Failed to re-seed super admin: {e}")
+        
+        if not user:
+            return False, None, "Invalid email or password."
     
     # Handle missing password_hash field
     password_hash = user.get("password_hash") or user.get("password")
@@ -36,7 +47,9 @@ def authenticate_user(email: str, password: str) -> tuple[bool, Optional[Dict[st
 
 
 def create_verification_token(user_id: int) -> str:
-    token = secrets.token_urlsafe(24)
+    """Generate a 6-digit verification code."""
+    import random
+    token = str(random.randint(100000, 999999))
     db.create_verification_token(user_id, token)
     return token
 
@@ -64,11 +77,8 @@ def send_verification_email(email: str, verification_token: str, base_url: str =
     from email.mime.multipart import MIMEMultipart
     
     try:
-        # Create verification link
-        verification_link = f"{base_url}?token={verification_token}"
-        
         # Create email content
-        subject = "Welcome to YLN Mentorship Platform - Please Verify Your Email"
+        subject = "Welcome to YLN Mentorship Platform - Verify Your Email"
         
         html_body = f"""
         <!DOCTYPE html>
@@ -79,7 +89,7 @@ def send_verification_email(email: str, verification_token: str, base_url: str =
                 .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
                 .header {{ background: linear-gradient(135deg, #722F37 0%, #8B4513 100%); color: #F5DEB3; text-align: center; padding: 30px; border-radius: 10px 10px 0 0; }}
                 .content {{ background: #fff; padding: 30px; border: 1px solid #ddd; border-top: none; }}
-                .button {{ background: #722F37; color: #F5DEB3; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }}
+                .code {{ background: #f8f9fa; border: 2px solid #722F37; border-radius: 8px; font-size: 28px; font-weight: bold; text-align: center; padding: 20px; margin: 20px 0; color: #722F37; font-family: 'Courier New', monospace; }}
                 .footer {{ background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #6c757d; border-radius: 0 0 10px 10px; }}
             </style>
         </head>
@@ -91,8 +101,10 @@ def send_verification_email(email: str, verification_token: str, base_url: str =
                 <div class="content">
                     <h2>Thank you for joining us!</h2>
                     <p>We're excited to have you as part of the YLN Mentorship Platform community.</p>
-                    <p>To complete your registration and start connecting with mentors, please verify your email address by clicking the button below:</p>
-                    <a href="{verification_link}" class="button">Verify My Email</a>
+                    <p>To complete your registration and start connecting with mentors, please enter this verification code on the platform:</p>
+                    
+                    <div class="code">{verification_token}</div>
+                    
                     <p>Once verified, you'll be able to:</p>
                     <ul>
                         <li>Browse and connect with experienced mentors</li>
@@ -100,9 +112,10 @@ def send_verification_email(email: str, verification_token: str, base_url: str =
                         <li>Schedule mentorship sessions</li>
                         <li>Access exclusive resources and opportunities</li>
                     </ul>
+                    
                     <hr>
-                    <p><small>If the button doesn't work, copy and paste this link into your browser:<br>
-                    {verification_link}</small></p>
+                    <p><strong>Important:</strong> This code expires in 24 hours for security purposes.</p>
+                    <p><small>If you didn't create this account, please ignore this email.</small></p>
                 </div>
                 <div class="footer">
                     <p>YLN Mentorship Platform<br>
