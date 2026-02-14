@@ -121,6 +121,9 @@ def init_db() -> None:
                     created_at TEXT NOT NULL
                 );
                 
+                CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+                CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+                
                 CREATE TABLE IF NOT EXISTS verification_tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -561,6 +564,11 @@ def _expiry_days(days: int = 7) -> str:
     return (datetime.utcnow() + timedelta(days=days)).isoformat()
 
 
+def _expiry_hours(hours: int = 1) -> str:
+    """Generate expiry time in hours for shorter-lived tokens."""
+    return (datetime.utcnow() + timedelta(hours=hours)).isoformat()
+
+
 def create_user(email: str, password_hash: str, role: str) -> int:
     if USE_SHEETS_ONLY:
         # In sheets-only mode, generate a user ID and write directly to sheets
@@ -680,12 +688,15 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             print(f"Sheets read failed, falling back to SQLite: {e}")
     
-    # Fallback to SQLite
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE email = ?", (email.lower(),)
-        ).fetchone()
-        return dict(row) if row else None
+    # Fallback to SQLite only if not in sheets-only mode
+    if not USE_SHEETS_ONLY:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE email = ?", (email.lower(),)
+            ).fetchone()
+            return dict(row) if row else None
+    
+    return None
 
 
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
@@ -840,6 +851,34 @@ def toggle_user_verification(user_id: int) -> bool:
 
 def delete_user(user_id: int) -> bool:
     """Delete a user and all associated data."""
+    
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, only work with Google Sheets
+        try:
+            # Get user info before deletion
+            user_to_delete = get_user_by_id(user_id)
+            if not user_to_delete:
+                print(f"User {user_id} not found in Google Sheets")
+                return False
+            
+            # Delete sessions from memory
+            with get_conn() as conn:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            
+            # Delete from Google Sheets
+            success = delete_from_sheets('users', user_to_delete)
+            if success:
+                print(f"Successfully deleted user {user_id} from Google Sheets")
+                return True
+            else:
+                print(f"Failed to delete user {user_id} from Google Sheets")
+                return False
+                
+        except Exception as e:
+            print(f"Failed to delete user in sheets-only mode: {e}")
+            return False
+    
+    # Original SQLite implementation
     try:
         # Get user info before deletion for sheets sync
         user_to_delete = None
@@ -912,34 +951,163 @@ def use_verification_token(token: str) -> Optional[int]:
         return int(row["user_id"])
 
 
-def create_session(user_id: int, token: str, days: int = 7) -> None:
+def create_session(user_id: int, token: str, hours: int = None, days: int = None) -> None:
+    """Create a session token with configurable expiry time."""
+    if days is not None:
+        # Legacy day-based expiry
+        expires_at = _expiry_days(days)
+    elif hours is not None:
+        # Hour-based expiry
+        expires_at = _expiry_hours(hours)
+    else:
+        # Default to 1 hour
+        expires_at = _expiry_hours(1)
+    
+    # Store in in-memory database for quick access
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO sessions (user_id, token, expires_at, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (user_id, token, _expiry_days(days), _now()),
+            (user_id, token, expires_at, _now()),
         )
+    
+    # Also store in Google Sheets for persistence across restarts
+    if SHEETS_ENABLED:
+        session_payload = {
+            'user_id': user_id,
+            'token': token,
+            'expires_at': expires_at,
+            'created_at': _now()
+        }
+        success = write_to_sheets('sessions', 'insert', session_payload)
+        if success:
+            print(f"Session token stored in Google Sheets for user {user_id}")
+        else:
+            print(f"Failed to store session in Google Sheets, queuing for retry")
+            enqueue_sheets_write('sessions', 'insert', session_payload)
 
 
 def get_session_user(token: str) -> Optional[Dict[str, Any]]:
+    """Get user from session token, checking both memory and Google Sheets."""
+    current_time = _now()
+    
+    # First try in-memory database (fastest)
     with get_conn() as conn:
-        row = conn.execute(
+        session_row = conn.execute(
             """
-            SELECT u.*
-            FROM sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.token = ? AND s.expires_at >= ?
+            SELECT user_id, expires_at
+            FROM sessions
+            WHERE token = ? AND expires_at >= ?
             """,
-            (token, _now()),
+            (token, current_time),
         ).fetchone()
-        return dict(row) if row else None
+        
+        if session_row:
+            # Session found in memory, get user data
+            if USE_SHEETS_ONLY:
+                user = get_user_by_id(session_row['user_id'])
+                return user
+            else:
+                # Regular mode - get from SQLite with join
+                row = conn.execute(
+                    """
+                    SELECT u.*
+                    FROM sessions s
+                    JOIN users u ON u.id = s.user_id
+                    WHERE s.token = ? AND s.expires_at >= ?
+                    """,
+                    (token, current_time),
+                ).fetchone()
+                return dict(row) if row else None
+    
+    # If not found in memory, check Google Sheets for persistent sessions
+    if SHEETS_ENABLED:
+        try:
+            session_records = read_from_sheets('sessions', {'token': token})
+            for session in session_records:
+                session_expires = session.get('expires_at', '')
+                if session_expires and session_expires >= current_time:
+                    user_id = session.get('user_id')
+                    if user_id:
+                        # Session is valid, restore to memory for faster access
+                        with get_conn() as conn:
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO sessions (user_id, token, expires_at, created_at)
+                                VALUES (?, ?, ?, ?)
+                                """,
+                                (user_id, token, session_expires, session.get('created_at', _now())),
+                            )
+                        print(f"Restored session from Google Sheets for user {user_id}")
+                        
+                        # Get user data
+                        user = get_user_by_id(user_id)
+                        return user
+        except Exception as e:
+            print(f"Failed to check sessions in Google Sheets: {e}")
+    
+    return None
+
+
+def cleanup_expired_sessions() -> None:
+    """Remove expired sessions from both memory and Google Sheets."""
+    current_time = _now()
+    
+    # Clean up in-memory sessions
+    with get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (current_time,))
+    
+    # Clean up Google Sheets sessions
+    if SHEETS_ENABLED:
+        try:
+            worksheet = get_worksheet('sessions')
+            if worksheet:
+                records = worksheet.get_all_records()
+                rows_to_delete = []
+                
+                for i, record in enumerate(records, start=2):  # Start at row 2 (after header)
+                    expires_at = record.get('expires_at', '')
+                    if expires_at and expires_at < current_time:
+                        rows_to_delete.append(i)
+                
+                # Delete expired sessions (reverse order to maintain row indices)
+                for row_num in reversed(rows_to_delete):
+                    worksheet.delete_rows(row_num)
+                    
+                if rows_to_delete:
+                    print(f"Cleaned up {len(rows_to_delete)} expired sessions from Google Sheets")
+                    
+        except Exception as e:
+            print(f"Failed to cleanup expired sessions from Google Sheets: {e}")
 
 
 def delete_session(token: str) -> None:
+    """Delete session from both memory and Google Sheets."""
+    # Delete from in-memory database
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    
+    # Also delete from Google Sheets
+    if SHEETS_ENABLED:
+        try:
+            # Find and delete session from sheets
+            session_records = read_from_sheets('sessions', {'token': token})
+            for session in session_records:
+                # Delete this session record
+                worksheet = get_worksheet('sessions')
+                if worksheet:
+                    try:
+                        # Find the cell with the token and delete the row
+                        cell = worksheet.find(token)
+                        if cell:
+                            worksheet.delete_rows(cell.row)
+                            print(f"Deleted session from Google Sheets")
+                    except Exception as e:
+                        print(f"Failed to delete session from sheets: {e}")
+        except Exception as e:
+            print(f"Error during session deletion from sheets: {e}")
 
 
 def create_mentor(data: Dict[str, Any]) -> int:

@@ -16,7 +16,11 @@ from app.config import APP_NAME, Roles, SUPER_ADMIN_EMAIL
 
 st.set_page_config(page_title=APP_NAME, page_icon="🤝", layout="wide")
 
-from streamlit_cookies_manager import CookieManager
+from app.simple_session import (
+    restore_user_session,
+    store_user_session, 
+    clear_user_session
+)
 
 UPLOADS_DIR = ROOT_DIR / "app" / "data" / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -136,7 +140,6 @@ def password_reset_form(token: str):
                 st.error("Failed to update password. Please try again.")
 
 from app import auth, db
-from app import sessions
 from app.emailer import (
     send_mentor_assigned_to_mentor,
     send_mentor_assigned_to_mentee,
@@ -157,47 +160,20 @@ def init_state() -> None:
         st.session_state.mentee_view = "grid"
     if "selected_mentor_id" not in st.session_state:
         st.session_state.selected_mentor_id = None
-    if "cookies" not in st.session_state:
-        st.session_state.cookies = CookieManager()
 
 
 def restore_session():
-    cookies = st.session_state.cookies
-    if not cookies.ready():
-        return
-    session_token = cookies.get("yln_session")
-    if session_token and not st.session_state.user:
-        user = sessions.get_user_from_session(session_token)
-        if user:
-            st.session_state.user = user
-        else:
-            cookies.delete("yln_session")
-            cookies.save()
+    """Restore user session using improved cookie approach."""
+    if not st.session_state.user:
+        restore_user_session()
 
 
 def set_user(user):
-    st.session_state.user = user
-    st.session_state.mentee_view = "grid"
-    st.session_state.selected_mentor_id = None
-    token = sessions.create_session(user["id"], days=7)
-    cookies = st.session_state.cookies
-    if not cookies.ready():
-        return
-    cookies.set("yln_session", token, max_age=60 * 60 * 24 * 7)
-    cookies.save()
+    store_user_session(user)
 
 
 def logout():
-    cookies = st.session_state.cookies
-    if not cookies.ready():
-        st.session_state.user = None
-        return
-    session_token = cookies.get("yln_session")
-    if session_token:
-        sessions.delete_session(session_token)
-    cookies.delete("yln_session")
-    cookies.save()
-    st.session_state.user = None
+    clear_user_session()
 
 
 def header():
@@ -763,13 +739,13 @@ def admin_panel():
     mentors = mentors
     mentees = mentees
     mentor_name_map = {
-        m["id"]: f"{m['first_name']} {m['last_name']}" for m in mentors
+        m["id"]: f"{m.get('first_name', '')} {m.get('last_name', '')}" for m in mentors if m.get("id")
     }
     mentee_name_map = {
-        m["id"]: f"{m['first_name']} {m['last_name']}" for m in mentees
+        m["id"]: f"{m.get('first_name', '')} {m.get('last_name', '')}" for m in mentees if m.get("id")
     }
-    mentor_options = [f"{m['id']} - {mentor_name_map[m['id']] }" for m in mentors]
-    mentee_options = [f"{m['id']} - {mentee_name_map[m['id']] }" for m in mentees]
+    mentor_options = [f"{m['id']} - {mentor_name_map.get(m['id'], 'Unknown')}" for m in mentors if m.get("id")]
+    mentee_options = [f"{m['id']} - {mentee_name_map.get(m['id'], 'Unknown')}" for m in mentees if m.get("id")]
 
     def _choice_to_id(choice: str) -> int:
         return int(str(choice).split("-", 1)[0].strip())
