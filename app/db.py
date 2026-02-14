@@ -1118,6 +1118,25 @@ def delete_session(token: str) -> None:
 
 
 def create_mentor(data: Dict[str, Any]) -> int:
+    if USE_SHEETS_ONLY:
+        mentor_id = int(datetime.now().timestamp() * 1000)
+        payload = {
+            'id': mentor_id,
+            'first_name': data.get('first_name'),
+            'last_name': data.get('last_name'),
+            'phone': data.get('phone'),
+            'email': data.get('email'),
+            'work_profile': data.get('work_profile'),
+            'bio': data.get('bio'),
+            'profile_pic': data.get('profile_pic'),
+            'is_active': 1,
+            'created_at': _now()
+        }
+        success = write_to_sheets('mentors', 'insert', payload)
+        if not success:
+            raise Exception("Failed to create mentor in Google Sheets")
+        return mentor_id
+
     with get_conn() as conn:
         cur = conn.execute(
             """
@@ -1141,6 +1160,24 @@ def create_mentor(data: Dict[str, Any]) -> int:
 
 
 def list_available_mentors() -> list[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        try:
+            mentors = read_from_sheets('mentors')
+            mentorships = read_from_sheets('mentorships')
+
+            assigned_mentor_ids = {str(m.get('mentor_id')) for m in mentorships if m.get('mentor_id')}
+            available = []
+            for mentor in mentors:
+                if str(mentor.get('is_active', '1')) != '1':
+                    continue
+                mentor_id = str(mentor.get('id', ''))
+                if mentor_id and mentor_id not in assigned_mentor_ids:
+                    available.append(mentor)
+            return sorted(available, key=lambda x: (x.get('last_name', ''), x.get('first_name', '')))
+        except Exception as e:
+            print(f"Failed to read available mentors from sheets: {e}")
+            return []
+
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -1155,6 +1192,14 @@ def list_available_mentors() -> list[Dict[str, Any]]:
 
 
 def get_mentor(mentor_id: int) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        try:
+            records = read_from_sheets('mentors', {'id': str(mentor_id)})
+            return records[0] if records else None
+        except Exception as e:
+            print(f"Failed to read mentor from sheets: {e}")
+            return None
+
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM mentors WHERE id = ?", (mentor_id,)).fetchone()
         return dict(row) if row else None
@@ -1185,6 +1230,21 @@ def list_mentors() -> list[Dict[str, Any]]:
 
 
 def update_mentor(mentor_id: int, data: Dict[str, Any]) -> None:
+    if USE_SHEETS_ONLY:
+        payload = {
+            'id': mentor_id,
+            'first_name': data.get('first_name'),
+            'last_name': data.get('last_name'),
+            'phone': data.get('phone'),
+            'email': data.get('email'),
+            'work_profile': data.get('work_profile'),
+            'bio': data.get('bio'),
+            'profile_pic': data.get('profile_pic'),
+            'is_active': int(data.get('is_active', 1))
+        }
+        write_to_sheets('mentors', 'update', payload)
+        return
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -1208,11 +1268,53 @@ def update_mentor(mentor_id: int, data: Dict[str, Any]) -> None:
 
 
 def delete_mentor(mentor_id: int) -> None:
+    if USE_SHEETS_ONLY:
+        delete_from_sheets('mentors', {'id': mentor_id})
+        return
+
     with get_conn() as conn:
         conn.execute("DELETE FROM mentors WHERE id = ?", (mentor_id,))
 
 
 def create_or_update_mentee_profile(user_id: int, data: Dict[str, Any]) -> int:
+    if USE_SHEETS_ONLY:
+        try:
+            existing = read_from_sheets('mentees', {'user_id': str(user_id)})
+            if existing:
+                mentee_id = existing[0].get('id')
+                payload = {
+                    'id': mentee_id,
+                    'user_id': user_id,
+                    'first_name': data.get('first_name'),
+                    'last_name': data.get('last_name'),
+                    'phone': data.get('phone'),
+                    'email': data.get('email'),
+                    'work_profile': data.get('work_profile'),
+                    'profile_pic': data.get('profile_pic')
+                }
+                write_to_sheets('mentees', 'update', payload)
+                return int(mentee_id) if mentee_id else int(user_id)
+
+            mentee_id = int(datetime.now().timestamp() * 1000)
+            payload = {
+                'id': mentee_id,
+                'user_id': user_id,
+                'first_name': data.get('first_name'),
+                'last_name': data.get('last_name'),
+                'phone': data.get('phone'),
+                'email': data.get('email'),
+                'work_profile': data.get('work_profile'),
+                'profile_pic': data.get('profile_pic'),
+                'created_at': _now()
+            }
+            success = write_to_sheets('mentees', 'insert', payload)
+            if not success:
+                raise Exception("Failed to create mentee profile in Google Sheets")
+            return mentee_id
+        except Exception as e:
+            print(f"Failed to create/update mentee profile in sheets: {e}")
+            raise
+
     with get_conn() as conn:
         existing = conn.execute(
             "SELECT id FROM mentees WHERE user_id = ?", (user_id,)
@@ -1258,6 +1360,14 @@ def create_or_update_mentee_profile(user_id: int, data: Dict[str, Any]) -> int:
 
 
 def get_mentee_by_user_id(user_id: int) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        try:
+            records = read_from_sheets('mentees', {'user_id': str(user_id)})
+            return records[0] if records else None
+        except Exception as e:
+            print(f"Failed to read mentee from sheets: {e}")
+            return None
+
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM mentees WHERE user_id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
@@ -1288,6 +1398,19 @@ def list_mentees() -> list[Dict[str, Any]]:
 
 
 def update_mentee(mentee_id: int, data: Dict[str, Any]) -> None:
+    if USE_SHEETS_ONLY:
+        payload = {
+            'id': mentee_id,
+            'first_name': data.get('first_name'),
+            'last_name': data.get('last_name'),
+            'phone': data.get('phone'),
+            'email': data.get('email'),
+            'work_profile': data.get('work_profile'),
+            'profile_pic': data.get('profile_pic')
+        }
+        write_to_sheets('mentees', 'update', payload)
+        return
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -1309,11 +1432,23 @@ def update_mentee(mentee_id: int, data: Dict[str, Any]) -> None:
 
 
 def delete_mentee(mentee_id: int) -> None:
+    if USE_SHEETS_ONLY:
+        delete_from_sheets('mentees', {'id': mentee_id})
+        return
+
     with get_conn() as conn:
         conn.execute("DELETE FROM mentees WHERE id = ?", (mentee_id,))
 
 
 def get_mentorship_by_mentee(mentee_id: int) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        try:
+            records = read_from_sheets('mentorships', {'mentee_id': str(mentee_id)})
+            return records[0] if records else None
+        except Exception as e:
+            print(f"Failed to read mentorship from sheets: {e}")
+            return None
+
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM mentorships WHERE mentee_id = ?", (mentee_id,)
@@ -1425,6 +1560,19 @@ def list_mentorships() -> list[Dict[str, Any]]:
 
 
 def update_mentorship(mentorship_id: int, mentor_id: int, mentee_id: int) -> tuple[bool, str]:
+    if USE_SHEETS_ONLY:
+        try:
+            payload = {
+                'id': mentorship_id,
+                'mentor_id': mentor_id,
+                'mentee_id': mentee_id
+            }
+            write_to_sheets('mentorships', 'update', payload)
+            return True, "Mentorship updated."
+        except Exception as e:
+            print(f"Failed to update mentorship in sheets: {e}")
+            return False, "Failed to update mentorship."
+
     with get_conn() as conn:
         try:
             conn.execute(
@@ -1441,11 +1589,37 @@ def update_mentorship(mentorship_id: int, mentor_id: int, mentee_id: int) -> tup
 
 
 def delete_mentorship(mentorship_id: int) -> None:
+    if USE_SHEETS_ONLY:
+        delete_from_sheets('mentorships', {'id': mentorship_id})
+        return
+
     with get_conn() as conn:
         conn.execute("DELETE FROM mentorships WHERE id = ?", (mentorship_id,))
 
 
 def assign_mentor(mentee_id: int, mentor_id: int) -> tuple[bool, str]:
+    if USE_SHEETS_ONLY:
+        try:
+            mentorships = read_from_sheets('mentorships')
+            for ms in mentorships:
+                if str(ms.get('mentor_id')) == str(mentor_id):
+                    return False, "Mentor is no longer available or mentee already assigned."
+                if str(ms.get('mentee_id')) == str(mentee_id):
+                    return False, "Mentor is no longer available or mentee already assigned."
+
+            mentorship_id = int(datetime.now().timestamp() * 1000)
+            payload = {
+                'id': mentorship_id,
+                'mentor_id': mentor_id,
+                'mentee_id': mentee_id,
+                'created_at': _now()
+            }
+            write_to_sheets('mentorships', 'insert', payload)
+            return True, "Mentor assigned."
+        except Exception as e:
+            print(f"Failed to assign mentor in sheets: {e}")
+            return False, "Mentor is no longer available or mentee already assigned."
+
     with get_conn() as conn:
         try:
             conn.execute(
@@ -1469,61 +1643,54 @@ def create_password_reset_token(user_id: int) -> str:
     # Token expires in 1 hour
     expires_at = (datetime.datetime.now() + datetime.timedelta(hours=1)).isoformat()
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    try:
+    with get_conn() as conn:
         # Mark any existing tokens as used
-        cursor.execute(
+        conn.execute(
             "UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0",
             (user_id,)
         )
-        
+
         # Create new token
-        cursor.execute(
+        conn.execute(
             "INSERT INTO password_reset_tokens (user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
             (user_id, token, expires_at, datetime.datetime.now().isoformat())
         )
-        conn.commit()
         return token
-    finally:
-        conn.close()
 
 
 def get_password_reset_token(token: str) -> dict | None:
     """Get password reset token details if valid."""
     import datetime
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute(
-            """SELECT prt.*, u.email 
-               FROM password_reset_tokens prt 
-               JOIN users u ON prt.user_id = u.id
-               WHERE prt.token = ? AND prt.used = 0""",
-            (token,)
-        )
-        result = cursor.fetchone()
-        
-        if not result:
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT prt.*
+            FROM password_reset_tokens prt
+            WHERE prt.token = ? AND prt.used = 0
+            """,
+            (token,),
+        ).fetchone()
+
+        if not row:
             return None
-            
+
         # Check if token is expired
-        expires_at = datetime.datetime.fromisoformat(result[4])
+        expires_at = datetime.datetime.fromisoformat(row[4])
         if datetime.datetime.now() > expires_at:
             return None
-            
+
+        # Get user email from sheets or sqlite
+        user = get_user_by_id(row[1])
+        user_email = user.get('email') if user else None
+
         return {
-            'id': result[0],
-            'user_id': result[1],
-            'token': result[2],
-            'expires_at': result[4],
-            'email': result[6]
+            'id': row[0],
+            'user_id': row[1],
+            'token': row[2],
+            'expires_at': row[4],
+            'email': user_email
         }
-    finally:
-        conn.close()
 
 
 def use_password_reset_token(token: str, new_password: str) -> bool:
@@ -1536,24 +1703,34 @@ def use_password_reset_token(token: str, new_password: str) -> bool:
         
     hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    try:
-        # Update password
-        cursor.execute(
+    with get_conn() as conn:
+        # Mark token as used
+        conn.execute(
+            "UPDATE password_reset_tokens SET used = 1 WHERE token = ?",
+            (token,),
+        )
+
+        # Update password in sheets or sqlite
+        if USE_SHEETS_ONLY:
+            user = get_user_by_id(token_data['user_id'])
+            if not user:
+                return False
+            write_to_sheets('users', 'update', {
+                'id': user['id'],
+                'email': user['email'],
+                'first_name': user.get('first_name', ''),
+                'last_name': user.get('last_name', ''),
+                'password_hash': hashed_password.decode('utf-8'),
+                'is_verified': user.get('is_verified', 0),
+                'created_at': user.get('created_at', '')
+            })
+            return True
+
+        conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (hashed_password.decode('utf-8'), token_data['user_id'])
         )
-        
-        # Mark token as used
-        cursor.execute(
-            "UPDATE password_reset_tokens SET used = 1 WHERE token = ?",
-            (token,)
-        )
-        
-        conn.commit()
-        
+
         # Try dual write to Google Sheets
         if GSPREAD_AVAILABLE and SHEETS_ENABLED:
             user = get_user_by_id(token_data['user_id'])
@@ -1567,14 +1744,15 @@ def use_password_reset_token(token: str, new_password: str) -> bool:
                     'is_verified': user['is_verified'],
                     'created_at': user['created_at']
                 })
-        
+
         return True
-    finally:
-        conn.close()
 
 
 def sync_all_to_sheets() -> dict:
     """Sync all data from SQLite to Google Sheets."""
+    if USE_SHEETS_ONLY:
+        return {'success': False, 'message': 'Sheets-only mode does not support SQLite sync'}
+
     if not GSPREAD_AVAILABLE or not SHEETS_ENABLED:
         return {'success': False, 'message': 'Google Sheets not available'}
     
