@@ -459,8 +459,15 @@ def write_to_sheets(entity_type: str, operation: str, payload: dict) -> bool:
                         headers = new_headers
                         print(f"Added new columns to {entity_type}: {headers_to_add}")
                     
-                    # Update row
-                    row_data = [payload.get(header, '') for header in headers]
+                    # Update row by merging with existing values to avoid blanking fields
+                    existing_row = worksheet.row_values(cell.row)
+                    # Pad existing row to match headers length
+                    if len(existing_row) < len(headers):
+                        existing_row = existing_row + [""] * (len(headers) - len(existing_row))
+                    existing_record = dict(zip(headers, existing_row))
+                    existing_record.update(payload)
+
+                    row_data = [existing_record.get(header, '') for header in headers]
                     worksheet.update(f'{cell.row}:{cell.row}', [row_data])
                     print(f"Updated row {cell.row} in {entity_type}")
                 else:
