@@ -120,6 +120,38 @@ def init_db() -> None:
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS mentors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    phone TEXT,
+                    email TEXT NOT NULL,
+                    work_profile TEXT,
+                    bio TEXT,
+                    profile_pic TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mentees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    phone TEXT,
+                    email TEXT NOT NULL,
+                    work_profile TEXT,
+                    profile_pic TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mentorships (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mentor_id INTEGER NOT NULL UNIQUE,
+                    mentee_id INTEGER NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                );
                 
                 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
