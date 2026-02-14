@@ -60,9 +60,13 @@ print(f"  FROM: {SMTP_FROM}")
 print(f"  TLS: {SMTP_TLS}")
 print(f"  PASS: {'***' if SMTP_PASS else 'EMPTY'}")
 
+# Database configuration
+USE_SQLITE = False  # Disable SQLite
+USE_SHEETS_ONLY = True  # Use Google Sheets as primary storage
+
 # Google Sheets configuration
-sheets_enabled_val = get_config_value("YLN_SHEETS_ENABLED", "false")
-SHEETS_ENABLED = str(sheets_enabled_val).lower() == "true"
+sheets_enabled_val = get_config_value("YLN_SHEETS_ENABLED", "true" if USE_SHEETS_ONLY else "false")
+SHEETS_ENABLED = USE_SHEETS_ONLY or str(sheets_enabled_val).lower() == "true"
 SHEETS_SPREADSHEET_ID = get_config_value("YLN_SHEETS_SPREADSHEET_ID", "")
 SHEETS_CREDENTIALS_JSON = get_config_value("YLN_SHEETS_CREDENTIALS_JSON", "")
 SHEETS_CREDENTIALS_PATH = get_config_value("YLN_SHEETS_CREDENTIALS_PATH", "")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -9,7 +10,8 @@ import uuid
 
 from app.config import (
     DB_PATH, Roles, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD,
-    SHEETS_ENABLED, SHEETS_SPREADSHEET_ID, SHEETS_CREDENTIALS_JSON, SHEETS_CREDENTIALS_PATH
+    SHEETS_ENABLED, SHEETS_SPREADSHEET_ID, SHEETS_CREDENTIALS_JSON, SHEETS_CREDENTIALS_PATH,
+    USE_SQLITE, USE_SHEETS_ONLY
 )
 from app.security import hash_password
 
@@ -23,10 +25,21 @@ except ImportError:
 # Global gspread client (lazy initialized)
 _gspread_client = None
 _in_memory_fallback = False
+_sheets_only_conn = None  # Shared in-memory connection for sheets-only mode
+_db_lock = threading.Lock()  # Lock for database access
 
 
 def _connect() -> sqlite3.Connection:
-    global _in_memory_fallback
+    global _in_memory_fallback, _sheets_only_conn
+    
+    # If we're in sheets-only mode, use a shared in-memory database with thread safety
+    if USE_SHEETS_ONLY:
+        with _db_lock:
+            if _sheets_only_conn is None:
+                _sheets_only_conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
+                _sheets_only_conn.row_factory = sqlite3.Row
+                print("Created shared in-memory database for session management (Sheets-only mode)")
+            return _sheets_only_conn
     
     try:
         if _in_memory_fallback:
@@ -70,18 +83,77 @@ def _connect() -> sqlite3.Connection:
 @contextmanager
 def get_conn() -> sqlite3.Connection:
     conn = _connect()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    
+    # For sheets-only mode, we need to manage thread safety
+    if USE_SHEETS_ONLY:
+        with _db_lock:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            # Don't close the shared connection
+    else:
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def init_db() -> None:
     global _in_memory_fallback
+    
+    # In sheets-only mode, only create minimal tables for session management
+    if USE_SHEETS_ONLY:
+        with get_conn() as conn:
+            # Only create essential tables for session management and sheets operations
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                
+                CREATE TABLE IF NOT EXISTS verification_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                
+                CREATE TABLE IF NOT EXISTS pending_sheets_writes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            """)
+        print("Initialized minimal database for session management (Sheets-only mode)")
+        return
     
     with get_conn() as conn:
         conn.executescript(
@@ -439,6 +511,24 @@ def dual_write(entity_type: str, operation: str, payload: dict):
 def seed_super_admin() -> None:
     if not SUPER_ADMIN_EMAIL or not SUPER_ADMIN_PASSWORD:
         return
+        
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, check if admin exists in sheets and create if not
+        try:
+            existing_user = get_user_by_email(SUPER_ADMIN_EMAIL)
+            if existing_user:
+                return
+            
+            # Create admin user directly in sheets
+            user_id = create_user(SUPER_ADMIN_EMAIL, hash_password(SUPER_ADMIN_PASSWORD), Roles.ADMIN)
+            # Set as verified immediately
+            set_user_verified(user_id)
+            print(f"Created super admin in Google Sheets: {SUPER_ADMIN_EMAIL}")
+        except Exception as e:
+            print(f"Failed to seed super admin in sheets: {e}")
+        return
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         existing = conn.execute(
             "SELECT id FROM users WHERE email = ?", (SUPER_ADMIN_EMAIL,)
@@ -472,6 +562,26 @@ def _expiry_days(days: int = 7) -> str:
 
 
 def create_user(email: str, password_hash: str, role: str) -> int:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, generate a user ID and write directly to sheets
+        user_id = int(datetime.now().timestamp() * 1000)  # Use timestamp as ID
+        
+        payload = {
+            'id': user_id,
+            'email': email.lower(),
+            'password_hash': password_hash,
+            'role': role,
+            'is_verified': 0,
+            'created_at': _now()
+        }
+        
+        success = write_to_sheets('users', 'insert', payload)
+        if not success:
+            raise Exception("Failed to create user in Google Sheets")
+            
+        return user_id
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         cur = conn.execute(
             """
@@ -528,6 +638,28 @@ def read_from_sheets(entity_type: str, filters: dict = None) -> list:
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, only read from sheets
+        try:
+            records = read_from_sheets('users', {'email': email.lower()})
+            if records:
+                user_record = records[0]  # Get first match
+                
+                # Handle column name inconsistency
+                if 'password_hash' not in user_record and 'password' in user_record:
+                    user_record['password_hash'] = user_record['password']
+                
+                # Ensure required fields exist
+                if 'password_hash' not in user_record:
+                    print(f"Warning: Password field missing from sheets for {email}")
+                    return None
+                    
+                return user_record
+        except Exception as e:
+            print(f"Failed to read user from sheets: {e}")
+            return None
+    
+    # Original implementation with sheets fallback
     # Try sheets first
     if SHEETS_ENABLED:
         try:
@@ -557,6 +689,17 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
 
 
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, only read from sheets
+        try:
+            records = read_from_sheets('users', {'id': str(user_id)})
+            if records:
+                return records[0]  # Return first match
+        except Exception as e:
+            print(f"Failed to read user from sheets: {e}")
+        return None
+    
+    # Original implementation with sheets fallback
     # Try sheets first
     if SHEETS_ENABLED:
         try:
@@ -574,6 +717,19 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
 
 def list_users() -> List[Dict[str, Any]]:
     """Get all users from the database."""
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, only read from sheets
+        try:
+            sheets_users = read_from_sheets('users')
+            # Sort by created_at if available
+            if sheets_users:
+                return sorted(sheets_users, key=lambda x: x.get('created_at', ''), reverse=True)
+            return []
+        except Exception as e:
+            print(f"Failed to read users from sheets: {e}")
+            return []
+    
+    # Original implementation
     # Get SQLite users first for reference
     sqlite_users = []
     sqlite_users_map = {}
@@ -611,6 +767,15 @@ def list_users() -> List[Dict[str, Any]]:
 
 
 def set_user_verified(user_id: int) -> None:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, update user directly in sheets
+        payload = {'id': user_id, 'is_verified': 1}
+        success = write_to_sheets('users', 'update', payload)
+        if not success:
+            print(f"Failed to update user verification in sheets for user {user_id}")
+        return
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         conn.execute("UPDATE users SET is_verified = 1 WHERE id = ?", (user_id,))
         conn.commit()
@@ -622,6 +787,16 @@ def set_user_verified(user_id: int) -> None:
 
 def update_user_role(user_id: int, role: str) -> bool:
     """Update user role."""
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, update user directly in sheets
+        try:
+            payload = {'id': user_id, 'role': role}
+            return write_to_sheets('users', 'update', payload)
+        except Exception as e:
+            print(f"Failed to update user role in sheets: {e}")
+            return False
+    
+    # Original SQLite implementation
     try:
         with get_conn() as conn:
             conn.execute(
@@ -811,6 +986,19 @@ def get_mentor(mentor_id: int) -> Optional[Dict[str, Any]]:
 
 
 def list_mentors() -> list[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, read from Google Sheets
+        try:
+            mentors = read_from_sheets('mentors')
+            # Sort by last name, first name if data exists
+            if mentors:
+                return sorted(mentors, key=lambda x: (x.get('last_name', ''), x.get('first_name', '')))
+            return []
+        except Exception as e:
+            print(f"Failed to read mentors from sheets: {e}")
+            return []
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -901,6 +1089,19 @@ def get_mentee_by_user_id(user_id: int) -> Optional[Dict[str, Any]]:
 
 
 def list_mentees() -> list[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, read from Google Sheets
+        try:
+            mentees = read_from_sheets('mentees')
+            # Sort by last name, first name if data exists
+            if mentees:
+                return sorted(mentees, key=lambda x: (x.get('last_name', ''), x.get('first_name', '')))
+            return []
+        except Exception as e:
+            print(f"Failed to read mentees from sheets: {e}")
+            return []
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -946,6 +1147,61 @@ def get_mentorship_by_mentee(mentee_id: int) -> Optional[Dict[str, Any]]:
 
 
 def list_mentor_pairs() -> list[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, manually join data from multiple sheets
+        try:
+            mentors = read_from_sheets('mentors')
+            mentees = read_from_sheets('mentees')
+            mentorships = read_from_sheets('mentorships')
+            
+            # Create lookup dictionaries
+            mentees_by_id = {str(mentee.get('id', '')): mentee for mentee in mentees if mentee.get('id')}
+            mentorships_by_mentor = {}
+            for mentorship in mentorships:
+                mentor_id = str(mentorship.get('mentor_id', ''))
+                if mentor_id:
+                    mentorships_by_mentor[mentor_id] = mentorship
+            
+            # Build the result
+            pairs = []
+            for mentor in mentors:
+                mentor_id = str(mentor.get('id', ''))
+                mentorship = mentorships_by_mentor.get(mentor_id)
+                
+                pair = {
+                    'mentor_id': mentor.get('id'),
+                    'mentor_first_name': mentor.get('first_name'),
+                    'mentor_last_name': mentor.get('last_name'),
+                    'mentor_email': mentor.get('email'),
+                    'mentee_id': None,
+                    'mentee_first_name': None,
+                    'mentee_last_name': None,
+                    'mentee_email': None,
+                    'paired_at': None
+                }
+                
+                if mentorship:
+                    mentee_id = str(mentorship.get('mentee_id', ''))
+                    mentee = mentees_by_id.get(mentee_id)
+                    if mentee:
+                        pair.update({
+                            'mentee_id': mentee.get('id'),
+                            'mentee_first_name': mentee.get('first_name'),
+                            'mentee_last_name': mentee.get('last_name'),
+                            'mentee_email': mentee.get('email'),
+                            'paired_at': mentorship.get('created_at')
+                        })
+                
+                pairs.append(pair)
+            
+            # Sort by mentor last name, first name
+            return sorted(pairs, key=lambda x: (x.get('mentor_last_name', ''), x.get('mentor_first_name', '')))
+            
+        except Exception as e:
+            print(f"Failed to read mentor pairs from sheets: {e}")
+            return []
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -969,6 +1225,19 @@ def list_mentor_pairs() -> list[Dict[str, Any]]:
 
 
 def list_mentorships() -> list[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        # In sheets-only mode, read from Google Sheets
+        try:
+            mentorships = read_from_sheets('mentorships')
+            # Sort by created_at if data exists
+            if mentorships:
+                return sorted(mentorships, key=lambda x: x.get('created_at', ''), reverse=True)
+            return []
+        except Exception as e:
+            print(f"Failed to read mentorships from sheets: {e}")
+            return []
+    
+    # Original SQLite implementation
     with get_conn() as conn:
         rows = conn.execute(
             """

@@ -381,25 +381,37 @@ def admin_panel():
         
         # Sync functionality with mobile-optimized layout
         st.subheader("🔄 Database Sync")
-        st.caption("Sync SQLite data with Google Sheets")
         
-        # Full-width buttons for mobile
-        if st.button("📊 Full Sync to Sheets", type="primary", use_container_width=True, help="Sync all data to Google Sheets"):
-            with st.spinner("Syncing data to Google Sheets..."):
-                result = db.sync_all_to_sheets()
-                
-            if result['success']:
-                st.success("✅ Sync completed!")
-                
-                # Show detailed results in compact format
-                results = result['results']
-                for entity, stats in results.items():
-                    synced = stats['synced']
-                    errors = stats['errors']
-                    if synced > 0 or errors > 0:
-                        st.info(f"**{entity.title()}:** {synced} synced, {errors} errors")
-            else:
-                st.error(f"❌ Sync failed: {result.get('message', 'Unknown error')}")
+        # Import the configuration to check database mode
+        from app.config import USE_SHEETS_ONLY, USE_SQLITE
+        
+        if USE_SHEETS_ONLY:
+            st.caption("📊 Using Google Sheets as primary storage")
+            st.info("**Mode:** Sheets-Only Mode (SQLite disabled)")
+        else:
+            st.caption("Sync SQLite data with Google Sheets")
+            
+        # Only show sync button if we're not in sheets-only mode
+        if not USE_SHEETS_ONLY:
+            # Full-width buttons for mobile
+            if st.button("📊 Full Sync to Sheets", type="primary", use_container_width=True, help="Sync all data to Google Sheets"):
+                with st.spinner("Syncing data to Google Sheets..."):
+                    result = db.sync_all_to_sheets()
+                    
+                if result['success']:
+                    st.success("✅ Sync completed!")
+                    
+                    # Show detailed results in compact format
+                    results = result['results']
+                    for entity, stats in results.items():
+                        synced = stats['synced']
+                        errors = stats['errors']
+                        if synced > 0 or errors > 0:
+                            st.info(f"**{entity.title()}:** {synced} synced, {errors} errors")
+                else:
+                    st.error(f"❌ Sync failed: {result.get('message', 'Unknown error')}")
+        else:
+            st.success("✅ All data operations are now directly using Google Sheets")
         
         # Clear sheets section with mobile optimization
         st.write("")
