@@ -1,5 +1,36 @@
+:root {
+  --bg: #f7f5fb;
+  --sidebar-bg: #ffffff;
+  --text: #1a1a1a;
+  --subtext: #4f4f4f;
+  --card-bg: #ffffff;
+  --border: #ece7f6;
+  --header-grad-1: #4b0010;
+  --header-grad-2: #6a0018;
+  --header-title: #ffbf00;
+  --header-subtitle: #ffd66b;
+  --accent: #ffbf00;
+  --accent-dark: #4b0010;
+}
+
+body.theme-dark {
+  --bg: #0f1117;
+  --sidebar-bg: #111827;
+  --text: #e5e7eb;
+  --subtext: #9ca3af;
+  --card-bg: #1f2937;
+  --border: #2b3645;
+  --header-grad-1: #2b0a10;
+  --header-grad-2: #4b0010;
+  --header-title: #ffd66b;
+  --header-subtitle: #fbbf24;
+  --accent: #fbbf24;
+  --accent-dark: #111827;
+}
+
 .stApp {
-  background: #f7f5fb;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .block-container {
@@ -20,11 +51,11 @@ h1, h2, h3 {
 }
 
 [data-testid="stSidebar"] {
-  background: #ffffff;
+  background: var(--sidebar-bg);
 }
 
 .stsubheader {
-  color: black;
+  color: var(--text);
   font-size: large;
 }
 
@@ -32,12 +63,20 @@ h1, h2, h3 {
   font-style: italic;
 }
 
+body.theme-dark .stMarkdown,
+body.theme-dark .stMarkdown p,
+body.theme-dark .stText,
+body.theme-dark .stCaption,
+body.theme-dark .stSubheader {
+  color: var(--text);
+}
+
 
 .yln-header {
   padding: 0.75rem 1rem;
   border-radius: 12px;
-  background: linear-gradient(90deg, #4b0010, #6a0018);
-  color: #ffbf00;
+  background: linear-gradient(90deg, var(--header-grad-1), var(--header-grad-2));
+  color: var(--header-title);
   margin-bottom: 1rem;
   height: 200px;
   display: flex;
@@ -49,13 +88,13 @@ h1, h2, h3 {
   font-size: 4rem;
   font-weight: 700;
   line-height: 1.2;
-  color: #ffbf00;
+  color: var(--header-title);
   margin-bottom: 0.25rem;
 }
 
 .yln-header__subtitle {
   font-size: 1.5rem;
-  color: #ffd66b;
+  color: var(--header-subtitle);
   font-style: italic;
 }
 
@@ -63,20 +102,20 @@ h1, h2, h3 {
   margin: 0.5rem 0 1rem 0;
   padding: 0.75rem 1rem;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid #ece7f6;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
 }
 
 .yln-welcome__title {
   font-size: 2rem;
   font-weight: 600;
-  color: #1a1a1a;
+  color: var(--text);
   margin-bottom: 0.25rem;
 }
 
 .yln-welcome__subtitle {
   font-size: 1rem;
-  color: #4f4f4f;
+  color: var(--subtext);
   font-style: italic;
 }
 
@@ -107,24 +146,24 @@ h1, h2, h3 {
     .mentor-name {
         font-size: 1.2rem;
         font-weight: 600;
-        color: #1E1E1E;
+        color: var(--text);
         margin: 0.5rem 0;
-    }
+      }
     
     .mentor-work-profile {
-        color: #666;
+        color: var(--subtext);
         font-size: 0.9rem;
         margin-bottom: 0.5rem;
         font-style: italic;
-    }
+      }
     
     .mentor-bio {
-        color: #444;
+        color: var(--subtext);
         font-size: 0.9rem;
         line-height: 1.5;
         flex-grow: 1;
         margin: 0.5rem 0;
-    }
+      }
     
     .view-profile-btn {
         margin-top: 1rem;

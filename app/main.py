@@ -155,6 +155,20 @@ def apply_custom_css() -> None:
         st.markdown(f"<style>{css_path.read_text()}</style>", unsafe_allow_html=True)
 
 
+def apply_theme() -> None:
+    theme = st.session_state.get("theme", "light")
+    st.components.v1.html(
+        f"""
+        <script>
+        const body = window.parent.document.body;
+        body.classList.remove('theme-light', 'theme-dark');
+        body.classList.add('theme-{theme}');
+        </script>
+        """,
+        height=0,
+    )
+
+
 def init_state() -> None:
     if "user" not in st.session_state:
         st.session_state.user = None
@@ -164,6 +178,10 @@ def init_state() -> None:
         st.session_state.selected_mentor_id = None
     if "session_token" not in st.session_state:
         st.session_state.session_token = None
+    if "pending_nav" not in st.session_state:
+        st.session_state.pending_nav = None
+    if "theme" not in st.session_state:
+        st.session_state.theme = "light"
 
 
 def restore_session_wrapper():
@@ -1160,6 +1178,7 @@ def main():
     init_state()
     restore_session_wrapper()
     apply_custom_css()
+    apply_theme()
     
     # Process pending sheets writes on app startup
     try:
@@ -1171,48 +1190,63 @@ def main():
     header()
     st.divider()
 
-    if not st.session_state.user:
-        auth_section()
-        return
-
     user = st.session_state.user
-    
+    profile_complete = None
+    current_page = "Home"
+
     # Initialize navigation state before creating widgets
     if user and user["role"] != Roles.ADMIN:
         profile_complete = is_mentee_profile_complete(user["id"])
+        if st.session_state.get("pending_nav"):
+            pending_nav = st.session_state.pending_nav
+            if pending_nav == "Home":
+                st.session_state["mentee_nav"] = 0
+            elif pending_nav == "Profile":
+                st.session_state["mentee_nav"] = 1
+            st.session_state.pending_nav = None
         
         # Set default navigation state
         if "mentee_nav" not in st.session_state:
             # Default to Profile if incomplete, Home if complete
             st.session_state["mentee_nav"] = 1 if not profile_complete else 0
-    
+
     with st.sidebar:
-        st.write(f"Logged in as {user['email']}")
-        if user["role"] != Roles.ADMIN:
-            # Check profile completion status for navigation
-            profile_complete = is_mentee_profile_complete(user["id"])
-            
-            # Navigation options with indicators
-            nav_options = [
-                "Home" if profile_complete else "🔒 Home (Complete Profile First)",
-                "👤 Profile" + ("" if profile_complete else " ⚠️")
-            ]
-            
-            # Use the pre-set session state index
-            selected_index = st.radio(
-                "Navigation",
-                options=range(len(nav_options)),
-                format_func=lambda i: nav_options[i],
-                index=st.session_state.get("mentee_nav", 0),
-                key="mentee_nav",
-            )
-            
-            # Determine current page based on selected index
-            current_page = "Profile" if selected_index == 1 else "Home"
-            
-        if st.button("Logout"):
-            logout()
-            st.rerun()
+        theme_is_dark = st.toggle(
+            "Dark mode",
+            value=st.session_state.theme == "dark",
+            key="theme_toggle",
+        )
+        st.session_state.theme = "dark" if theme_is_dark else "light"
+        apply_theme()
+
+        if user:
+            st.write(f"Logged in as {user['email']}")
+            if user["role"] != Roles.ADMIN:
+                # Navigation options with indicators
+                nav_options = [
+                    "Home" if profile_complete else "🔒 Home (Complete Profile First)",
+                    "👤 Profile" + ("" if profile_complete else " ⚠️")
+                ]
+                
+                # Use the pre-set session state index
+                selected_index = st.radio(
+                    "Navigation",
+                    options=range(len(nav_options)),
+                    format_func=lambda i: nav_options[i],
+                    index=st.session_state.get("mentee_nav", 0),
+                    key="mentee_nav",
+                )
+                
+                # Determine current page based on selected index
+                current_page = "Profile" if selected_index == 1 else "Home"
+                
+            if st.button("Logout"):
+                logout()
+                st.rerun()
+
+    if not user:
+        auth_section()
+        return
 
     if user["role"] == Roles.ADMIN:
         admin_panel()
