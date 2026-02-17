@@ -16,10 +16,12 @@ from app.config import APP_NAME, Roles, SUPER_ADMIN_EMAIL
 
 st.set_page_config(page_title=APP_NAME, page_icon="🤝", layout="wide")
 
-from app.simple_session import (
-    restore_user_session,
-    store_user_session, 
-    clear_user_session
+from app.cookies import (
+    restore_session,
+    login_user,
+    logout_user,
+    is_user_logged_in,
+    get_current_user
 )
 
 UPLOADS_DIR = ROOT_DIR / "app" / "data" / "uploads"
@@ -160,20 +162,24 @@ def init_state() -> None:
         st.session_state.mentee_view = "grid"
     if "selected_mentor_id" not in st.session_state:
         st.session_state.selected_mentor_id = None
+    if "session_token" not in st.session_state:
+        st.session_state.session_token = None
 
 
-def restore_session():
-    """Restore user session using improved cookie approach."""
+def restore_session_wrapper():
+    """Restore user session from stored cookies/database."""
     if not st.session_state.user:
-        restore_user_session()
+        restore_session()
 
 
 def set_user(user):
-    store_user_session(user)
+    """Login user and set session cookie."""
+    login_user(user)
 
 
 def logout():
-    clear_user_session()
+    """Logout user and clear session."""
+    logout_user()
 
 
 def header():
@@ -244,6 +250,11 @@ def auth_section():
                     ok, msg = auth.verify_email_token(token)
                     if ok:
                         st.success(msg)
+                        # Auto-login user after successful verification
+                        user = db.get_user_by_id(user_id)
+                        if user:
+                            set_user(user)
+                            st.session_state.user = user
                         del st.session_state.pending_verification
                         st.balloons()
                         st.rerun()
@@ -1147,7 +1158,7 @@ def main():
         st.error("Database initialization failed. Please contact support.")
         return
     init_state()
-    restore_session()
+    restore_session_wrapper()
     apply_custom_css()
     
     # Process pending sheets writes on app startup
