@@ -105,16 +105,11 @@ def get_session_cookie() -> Optional[Dict[str, Any]]:
     Returns:
         Dict with user_id and session_token if cookie exists, None otherwise
     """
-    if 'session_cookie' in st.session_state:
-        return st.session_state.session_cookie
-    
-    # Try to read cookie from browser
     try:
-        components.html(JS_GET_COOKIE, height=0)
-        # Note: In a real implementation with JS bridges, we'd get this from postMessage
-        # For now, we rely on server-side session restoration
+        if 'session_cookie' in st.session_state:
+            return st.session_state.session_cookie
     except Exception as e:
-        print(f"Failed to read session cookie: {e}")
+        print(f"Failed to get session cookie from state: {e}")
     
     return None
 
@@ -168,39 +163,46 @@ def login_user(user: Dict[str, Any]) -> None:
     Args:
         user: User dictionary with 'id' and 'email' fields
     """
-    # Create database session (24-hour expiry)
-    session_token = sessions.create_session(user['id'], hours=24)
-    
-    # Set browser cookie (30-day expiry for convenience, but token expires in 24h)
-    set_session_cookie(user['id'], session_token, days=30)
-    
-    # Store in Streamlit session state
-    st.session_state.user = user
-    st.session_state.session_token = session_token
-    
-    print(f"User logged in: {user.get('email')} (token: {session_token[:16]}...)")
+    try:
+        # Create database session (24-hour expiry)
+        session_token = sessions.create_session(user['id'], hours=24)
+        
+        # Set browser cookie (30-day expiry for convenience, but token expires in 24h)
+        set_session_cookie(user['id'], session_token, days=30)
+        
+        # Store in Streamlit session state
+        st.session_state.user = user
+        st.session_state.session_token = session_token
+        
+        print(f"User logged in: {user.get('email')} (token: {session_token[:16]}...)")
+    except Exception as e:
+        print(f"Error during login: {e}")
+        raise
 
 
 def logout_user() -> None:
     """
     Logout user by clearing session and cookie.
     """
-    # Delete session from database
-    if 'session_token' in st.session_state:
-        try:
-            sessions.delete_session(st.session_state.session_token)
-        except Exception as e:
-            print(f"Failed to delete session from database: {e}")
-    
-    # Clear browser cookie
-    clear_session_cookie()
-    
-    # Clear Streamlit session state
-    st.session_state.user = None
-    if 'session_token' in st.session_state:
-        del st.session_state.session_token
-    
-    print("User logged out")
+    try:
+        # Delete session from database
+        if 'session_token' in st.session_state:
+            try:
+                sessions.delete_session(st.session_state.session_token)
+            except Exception as e:
+                print(f"Failed to delete session from database: {e}")
+        
+        # Clear browser cookie
+        clear_session_cookie()
+        
+        # Clear Streamlit session state
+        st.session_state.user = None
+        if 'session_token' in st.session_state:
+            del st.session_state.session_token
+        
+        print("User logged out")
+    except Exception as e:
+        print(f"Error during logout: {e}")
 
 
 def restore_session() -> bool:
@@ -213,26 +215,30 @@ def restore_session() -> bool:
     Returns:
         True if session was restored, False otherwise
     """
-    if st.session_state.get('user'):
-        return True
+    try:
+        if st.session_state.get('user'):
+            return True
+    except Exception as e:
+        print(f"Warning: Could not check session state: {e}")
+        return False
     
     # Try to get session token from various sources
     session_token = None
     
     # 1. Check if it was stored in previous session state
-    if 'session_token' in st.session_state:
-        session_token = st.session_state.session_token
+    try:
+        if 'session_token' in st.session_state:
+            session_token = st.session_state.session_token
+    except Exception as e:
+        print(f"Warning: Could not check session token state: {e}")
     
     # 2. Check query parameters (for external redirects)
     if not session_token:
         try:
             query_params = st.query_params
             session_token = query_params.get('token')
-        except Exception:
-            pass
-    
-    # 3. Check localStorage via hidden component (requires custom JS)
-    # This would need a custom Streamlit component to read httponly cookies
+        except Exception as e:
+            print(f"Warning: Could not check query params: {e}")
     
     if session_token:
         try:
@@ -252,9 +258,12 @@ def restore_session() -> bool:
         except Exception as e:
             print(f"Failed to restore session: {e}")
             # Clear invalid session data
-            st.session_state.user = None
-            if 'session_token' in st.session_state:
-                del st.session_state.session_token
+            try:
+                st.session_state.user = None
+                if 'session_token' in st.session_state:
+                    del st.session_state.session_token
+            except Exception:
+                pass
     
     return False
 
