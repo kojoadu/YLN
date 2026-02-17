@@ -90,3 +90,64 @@ def send_mentor_assigned_to_mentee(mentee_email: str, mentee_name: str, mentor_n
         "We will be in touch with next steps."
     )
     return send_email(mentee_email, subject, body)
+
+
+def send_session_proposed(
+    to_email: str,
+    recipient_name: str,
+    proposer_name: str,
+    start_time: str,
+    end_time: str,
+) -> bool:
+    subject = f"New session proposal - {APP_NAME}"
+    body = (
+        f"Hello {recipient_name},\n\n"
+        f"{proposer_name} proposed a mentorship session.\n\n"
+        f"Proposed time: {start_time} to {end_time}\n\n"
+        "Please log in to accept or propose a new time."
+    )
+    return send_email(to_email, subject, body)
+
+
+def send_session_accepted(
+    mentor_email: str,
+    mentee_email: str,
+    mentor_name: str,
+    mentee_name: str,
+    start_time: str,
+    end_time: str,
+) -> bool:
+    subject = f"Session confirmed - {APP_NAME}"
+    body = (
+        "Hello,\n\n"
+        f"Your mentorship session is confirmed.\n\n"
+        f"Mentor: {mentor_name}\n"
+        f"Mentee: {mentee_name}\n"
+        f"When: {start_time} to {end_time}\n\n"
+        "We will send a reminder 24 hours before the meeting."
+    )
+    ok1 = send_email(mentor_email, subject, body)
+    ok2 = send_email(mentee_email, subject, body)
+    return ok1 and ok2
+
+
+def send_session_reminder(
+    mentor_email: str,
+    mentee_email: str,
+    mentor_name: str,
+    mentee_name: str,
+    start_time: str,
+    end_time: str,
+) -> bool:
+    subject = f"Reminder: session tomorrow - {APP_NAME}"
+    body = (
+        "Hello,\n\n"
+        "Reminder: your mentorship session is scheduled for tomorrow.\n\n"
+        f"Mentor: {mentor_name}\n"
+        f"Mentee: {mentee_name}\n"
+        f"When: {start_time} to {end_time}\n\n"
+        "See you soon!"
+    )
+    ok1 = send_email(mentor_email, subject, body)
+    ok2 = send_email(mentee_email, subject, body)
+    return ok1 and ok2

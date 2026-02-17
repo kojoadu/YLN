@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -35,7 +36,8 @@ def save_upload(uploaded_file) -> str:
     file_path = UPLOADS_DIR / safe_name
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-    return str(file_path)
+    # Return relative path from app folder for storage in sheets
+    return str(Path("app/data/uploads") / safe_name)
 
 
 def safe_image(image_ref: str, width: int) -> None:
@@ -46,6 +48,12 @@ def safe_image(image_ref: str, width: int) -> None:
         cleaned.startswith("'") and cleaned.endswith("'")
     ):
         cleaned = cleaned[1:-1]
+    
+    # Convert relative paths to absolute paths
+    if not cleaned.startswith(("http://", "https://", "C:\\", "/")):
+        # This is a relative path like app/data/uploads/...
+        cleaned = str(ROOT_DIR / cleaned)
+    
     try:
         st.image(cleaned, width=width)
     except Exception:
@@ -146,6 +154,9 @@ from app.emailer import (
     send_mentor_assigned_to_mentor,
     send_mentor_assigned_to_mentee,
     send_verification_email,
+    send_session_proposed,
+    send_session_accepted,
+    send_session_reminder,
 )
 
 
@@ -167,6 +178,32 @@ def apply_theme() -> None:
         """,
         height=0,
     )
+
+
+def format_session_time(iso_value: str) -> str:
+    try:
+        return datetime.fromisoformat(iso_value).strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        return iso_value
+
+
+def send_session_reminders() -> None:
+    upcoming = db.list_upcoming_accepted_sessions(within_hours=24)
+    for session in upcoming:
+        mentor = db.get_mentor(int(session.get("mentor_id")))
+        mentee = db.get_mentee_by_id(int(session.get("mentee_id")))
+        if not mentor or not mentee:
+            continue
+        ok = send_session_reminder(
+            mentor.get("email", ""),
+            mentee.get("email", ""),
+            f"{mentor.get('first_name', '')} {mentor.get('last_name', '')}",
+            f"{mentee.get('first_name', '')} {mentee.get('last_name', '')}",
+            format_session_time(session.get("proposed_start", "")),
+            format_session_time(session.get("proposed_end", "")),
+        )
+        if ok:
+            db.mark_session_reminder_sent(int(session.get("id")))
 
 
 def init_state() -> None:
@@ -426,7 +463,7 @@ def admin_panel():
             if st.button("🗑️ Clear All Sheets Data", use_container_width=True):
                 if st.checkbox("✅ I understand this will clear all data", key="clear_confirm"):
                     with st.spinner("Clearing Google Sheets data..."):
-                        entities = ['users', 'mentors', 'mentees', 'mentorships', 'sessions']
+                        entities = ['users', 'mentors', 'mentees', 'mentorships', 'mentorship_sessions', 'sessions']
                         cleared_count = 0
                         
                         for entity in entities:
@@ -723,6 +760,7 @@ def admin_panel():
     mentors = db.list_mentors()
     mentees = db.list_mentees()
     mentorships = db.list_mentorships()
+    mentorship_sessions = db.list_mentorship_sessions()
     pairings = db.list_mentor_pairs()
     export_buffer = io.BytesIO()
     with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
@@ -730,6 +768,7 @@ def admin_panel():
         pd.DataFrame(mentors).to_excel(writer, index=False, sheet_name="mentors")
         pd.DataFrame(mentees).to_excel(writer, index=False, sheet_name="mentees")
         pd.DataFrame(mentorships).to_excel(writer, index=False, sheet_name="mentorships")
+        pd.DataFrame(mentorship_sessions).to_excel(writer, index=False, sheet_name="mentorship_sessions")
         pd.DataFrame(pairings).to_excel(writer, index=False, sheet_name="pairings")
     st.download_button(
         "📥 Download all data (XLSX)",
@@ -762,6 +801,120 @@ def admin_panel():
         st.dataframe(pairs_df, use_container_width=True)
     else:
         st.info("No mentors found.")
+
+    st.divider()
+    st.subheader("📅 Mentorship Scheduling (Mentor View)")
+    if pairs:
+        pairing_options = []
+        pairing_map = {}
+        for pair in pairs:
+            if not pair.get("mentee_id") or not pair.get("mentor_id"):
+                continue
+            label = (
+                f"{pair.get('mentor_first_name', '')} {pair.get('mentor_last_name', '')}"
+                f" ↔ {pair.get('mentee_first_name', '')} {pair.get('mentee_last_name', '')}"
+            )
+            pairing_options.append(label)
+            pairing_map[label] = pair
+
+        if pairing_options:
+            selected_pair_label = st.selectbox("Select a pairing", pairing_options)
+            selected_pair = pairing_map.get(selected_pair_label)
+            mentor_id = int(selected_pair.get("mentor_id"))
+            mentee_id = int(selected_pair.get("mentee_id"))
+            mentor = db.get_mentor(mentor_id)
+            mentee = db.get_mentee_by_id(mentee_id)
+            mentorship = db.get_mentorship_by_mentee(mentee_id)
+
+            if not mentorship:
+                st.warning("This pairing does not have an active mentorship record yet.")
+                st.stop()
+
+            with st.expander("📅 Propose a session (as mentor)", expanded=False):
+                col1, col2, col3 = st.columns([1, 1, 1])
+                with col1:
+                    proposed_date = st.date_input("Date", key="mentor_propose_date")
+                with col2:
+                    proposed_time = st.time_input("Start time", key="mentor_propose_time")
+                with col3:
+                    duration_minutes = st.selectbox(
+                        "Duration",
+                        options=[30, 45, 60, 90],
+                        index=2,
+                        key="mentor_propose_duration",
+                        format_func=lambda v: f"{v} minutes",
+                    )
+
+                if st.button("📨 Send proposal", type="primary", key="mentor_send_proposal"):
+                    start_dt = datetime.combine(proposed_date, proposed_time)
+                    end_dt = start_dt + timedelta(minutes=int(duration_minutes))
+                    db.create_session_proposal(
+                        mentorship_id=int(mentorship.get("id")) if mentorship else 0,
+                        mentor_id=mentor_id,
+                        mentee_id=mentee_id,
+                        proposed_by="mentor",
+                        proposed_start=start_dt.isoformat(),
+                        proposed_end=end_dt.isoformat(),
+                    )
+                    if mentor and mentee:
+                        send_session_proposed(
+                            mentee.get("email", ""),
+                            f"{mentee.get('first_name', '')} {mentee.get('last_name', '')}",
+                            f"{mentor.get('first_name', '')} {mentor.get('last_name', '')}",
+                            format_session_time(start_dt.isoformat()),
+                            format_session_time(end_dt.isoformat()),
+                        )
+                    st.success("Proposal sent to mentee.")
+                    st.rerun()
+
+            st.subheader("Pending Proposals")
+            proposals = db.list_session_proposals(mentor_id, mentee_id, status="proposed")
+            pending = [p for p in proposals if p.get("proposed_by") == "mentee"]
+            if not pending:
+                st.info("No pending proposals from mentees.")
+            else:
+                for proposal in pending:
+                    start_label = format_session_time(proposal.get("proposed_start", ""))
+                    end_label = format_session_time(proposal.get("proposed_end", ""))
+                    st.markdown(f"**{start_label} – {end_label}**")
+                    col_accept, col_reject = st.columns([1, 1])
+                    with col_accept:
+                        if st.button("✅ Accept", key=f"admin_accept_{proposal.get('id')}"):
+                            db.update_session_status(int(proposal.get("id")), "accepted")
+                            if mentor and mentee:
+                                send_session_accepted(
+                                    mentor.get("email", ""),
+                                    mentee.get("email", ""),
+                                    f"{mentor.get('first_name', '')} {mentor.get('last_name', '')}",
+                                    f"{mentee.get('first_name', '')} {mentee.get('last_name', '')}",
+                                    start_label,
+                                    end_label,
+                                )
+                            st.success("Session accepted and added to the calendar.")
+                            st.rerun()
+                    with col_reject:
+                        if st.button("❌ Decline", key=f"admin_reject_{proposal.get('id')}"):
+                            db.update_session_status(int(proposal.get("id")), "rejected")
+                            st.info("Proposal declined.")
+                            st.rerun()
+
+            st.subheader("Calendar")
+            accepted = db.list_session_proposals(mentor_id, mentee_id, status="accepted")
+            if accepted:
+                rows = []
+                for session in accepted:
+                    rows.append(
+                        {
+                            "Start": format_session_time(session.get("proposed_start", "")),
+                            "End": format_session_time(session.get("proposed_end", "")),
+                            "Status": session.get("status", ""),
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            else:
+                st.info("No confirmed sessions yet.")
+        else:
+            st.info("No active mentor-mentee pairings yet.")
 
     st.subheader("Mentorships (Edit/Delete)")
     mentorships = mentorships
@@ -1035,7 +1188,7 @@ def mentee_profile_section(user):
                 )
                 st.success("✅ Profile saved successfully! You can now access all features.")
                 # Update session state to allow navigation to Home
-                st.session_state["mentee_nav"] = "Home"
+                st.session_state.pending_nav = "Home"
                 st.rerun()
 
 
@@ -1053,6 +1206,108 @@ def mentorship_section(user):
             st.success(
                 f"You already have a mentor: {mentor['first_name']} {mentor['last_name']}"
             )
+        else:
+            st.warning("Mentor record not found. Please contact support.")
+            return
+        st.divider()
+        st.subheader("Mentorship Scheduling")
+
+        with st.expander("📅 Propose a session", expanded=True):
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col1:
+                proposed_date = st.date_input("Date")
+            with col2:
+                proposed_time = st.time_input("Start time")
+            with col3:
+                duration_minutes = st.selectbox(
+                    "Duration",
+                    options=[30, 45, 60, 90],
+                    index=2,
+                    format_func=lambda v: f"{v} minutes",
+                )
+
+            if st.button("📨 Send proposal", type="primary"):
+                start_dt = datetime.combine(proposed_date, proposed_time)
+                end_dt = start_dt + timedelta(minutes=int(duration_minutes))
+                try:
+                    session_id = db.create_session_proposal(
+                        mentorship_id=int(existing["id"]),
+                        mentor_id=int(mentor["id"]),
+                        mentee_id=int(mentee["id"]),
+                        proposed_by="mentee",
+                        proposed_start=start_dt.isoformat(),
+                        proposed_end=end_dt.isoformat(),
+                    )
+                    send_session_proposed(
+                        mentor.get("email", ""),
+                        f"{mentor.get('first_name', '')} {mentor.get('last_name', '')}",
+                        f"{mentee.get('first_name', '')} {mentee.get('last_name', '')}",
+                        format_session_time(start_dt.isoformat()),
+                        format_session_time(end_dt.isoformat()),
+                    )
+                    st.success("Proposal sent to your mentor.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to send proposal: {e}")
+
+        proposals = db.list_session_proposals(
+            mentor_id=int(mentor["id"]),
+            mentee_id=int(mentee["id"]),
+            status="proposed",
+        )
+
+        st.subheader("Pending Proposals")
+        if not proposals:
+            st.info("No pending proposals yet.")
+        else:
+            for proposal in proposals:
+                start_label = format_session_time(proposal.get("proposed_start", ""))
+                end_label = format_session_time(proposal.get("proposed_end", ""))
+                proposed_by = proposal.get("proposed_by", "unknown")
+                st.markdown(f"**{start_label} – {end_label}**  ")
+                st.caption(f"Proposed by: {proposed_by}")
+
+                if proposed_by == "mentor":
+                    col_accept, col_reject = st.columns([1, 1])
+                    with col_accept:
+                        if st.button("✅ Accept", key=f"accept_{proposal.get('id')}"):
+                            db.update_session_status(int(proposal.get("id")), "accepted")
+                            send_session_accepted(
+                                mentor.get("email", ""),
+                                mentee.get("email", ""),
+                                f"{mentor.get('first_name', '')} {mentor.get('last_name', '')}",
+                                f"{mentee.get('first_name', '')} {mentee.get('last_name', '')}",
+                                start_label,
+                                end_label,
+                            )
+                            st.success("Session accepted and added to the calendar.")
+                            st.rerun()
+                    with col_reject:
+                        if st.button("❌ Decline", key=f"reject_{proposal.get('id')}"):
+                            db.update_session_status(int(proposal.get("id")), "rejected")
+                            st.info("Proposal declined.")
+                            st.rerun()
+
+        st.subheader("Calendar")
+        accepted = db.list_session_proposals(
+            mentor_id=int(mentor["id"]),
+            mentee_id=int(mentee["id"]),
+            status="accepted",
+        )
+        if accepted:
+            calendar_rows = []
+            for session in accepted:
+                calendar_rows.append(
+                    {
+                        "Start": format_session_time(session.get("proposed_start", "")),
+                        "End": format_session_time(session.get("proposed_end", "")),
+                        "Status": session.get("status", ""),
+                    }
+                )
+            st.dataframe(pd.DataFrame(calendar_rows), use_container_width=True)
+        else:
+            st.info("No confirmed sessions yet.")
+
         return
 
     mentors = db.list_available_mentors()
@@ -1186,6 +1441,12 @@ def main():
     except Exception as e:
         # Don't let sheets processing break the app
         print(f"Failed to process pending sheets writes: {e}")
+
+    # Send upcoming session reminders
+    try:
+        send_session_reminders()
+    except Exception as e:
+        print(f"Failed to send session reminders: {e}")
     
     header()
     st.divider()

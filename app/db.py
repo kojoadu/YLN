@@ -152,6 +152,20 @@ def init_db() -> None:
                     mentee_id INTEGER NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS mentorship_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mentorship_id INTEGER NOT NULL,
+                    mentor_id INTEGER NOT NULL,
+                    mentee_id INTEGER NOT NULL,
+                    proposed_by TEXT NOT NULL,
+                    proposed_start TEXT NOT NULL,
+                    proposed_end TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    accepted_at TEXT,
+                    reminder_sent_at TEXT
+                );
                 
                 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
@@ -253,6 +267,23 @@ def init_db() -> None:
                 mentor_id INTEGER NOT NULL UNIQUE,
                 mentee_id INTEGER NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
+                FOREIGN KEY (mentor_id) REFERENCES mentors(id) ON DELETE CASCADE,
+                FOREIGN KEY (mentee_id) REFERENCES mentees(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS mentorship_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mentorship_id INTEGER NOT NULL,
+                mentor_id INTEGER NOT NULL,
+                mentee_id INTEGER NOT NULL,
+                proposed_by TEXT NOT NULL,
+                proposed_start TEXT NOT NULL,
+                proposed_end TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                accepted_at TEXT,
+                reminder_sent_at TEXT,
+                FOREIGN KEY (mentorship_id) REFERENCES mentorships(id) ON DELETE CASCADE,
                 FOREIGN KEY (mentor_id) REFERENCES mentors(id) ON DELETE CASCADE,
                 FOREIGN KEY (mentee_id) REFERENCES mentees(id) ON DELETE CASCADE
             );
@@ -1405,6 +1436,20 @@ def get_mentee_by_user_id(user_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+def get_mentee_by_id(mentee_id: int) -> Optional[Dict[str, Any]]:
+    if USE_SHEETS_ONLY:
+        try:
+            records = read_from_sheets('mentees', {'id': str(mentee_id)})
+            return records[0] if records else None
+        except Exception as e:
+            print(f"Failed to read mentee from sheets: {e}")
+            return None
+
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM mentees WHERE id = ?", (mentee_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def list_mentees() -> list[Dict[str, Any]]:
     if USE_SHEETS_ONLY:
         # In sheets-only mode, read from Google Sheets
@@ -1666,6 +1711,185 @@ def assign_mentor(mentee_id: int, mentor_id: int) -> tuple[bool, str]:
             return False, "Mentor is no longer available or mentee already assigned."
 
 
+def create_session_proposal(
+    mentorship_id: int,
+    mentor_id: int,
+    mentee_id: int,
+    proposed_by: str,
+    proposed_start: str,
+    proposed_end: str,
+) -> int:
+    """Create a new mentorship session proposal."""
+    session_id = int(datetime.now().timestamp() * 1000)
+    payload = {
+        "id": session_id,
+        "mentorship_id": mentorship_id,
+        "mentor_id": mentor_id,
+        "mentee_id": mentee_id,
+        "proposed_by": proposed_by,
+        "proposed_start": proposed_start,
+        "proposed_end": proposed_end,
+        "status": "proposed",
+        "created_at": _now(),
+    }
+
+    if USE_SHEETS_ONLY:
+        success = write_to_sheets("mentorship_sessions", "insert", payload)
+        if not success:
+            raise Exception("Failed to create session proposal in Google Sheets")
+        return session_id
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO mentorship_sessions (
+                id, mentorship_id, mentor_id, mentee_id, proposed_by,
+                proposed_start, proposed_end, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                mentorship_id,
+                mentor_id,
+                mentee_id,
+                proposed_by,
+                proposed_start,
+                proposed_end,
+                "proposed",
+                _now(),
+            ),
+        )
+        return int(cur.lastrowid or session_id)
+
+
+def list_session_proposals(
+    mentor_id: int,
+    mentee_id: int,
+    status: Optional[str] = None,
+) -> list[Dict[str, Any]]:
+    """List session proposals for a mentor/mentee pair."""
+    if USE_SHEETS_ONLY:
+        filters = {"mentor_id": str(mentor_id), "mentee_id": str(mentee_id)}
+        records = read_from_sheets("mentorship_sessions", filters)
+        if status:
+            records = [r for r in records if str(r.get("status")) == status]
+        return sorted(records, key=lambda x: x.get("proposed_start", ""), reverse=True)
+
+    with get_conn() as conn:
+        if status:
+            rows = conn.execute(
+                """
+                SELECT * FROM mentorship_sessions
+                WHERE mentor_id = ? AND mentee_id = ? AND status = ?
+                ORDER BY proposed_start DESC
+                """,
+                (mentor_id, mentee_id, status),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM mentorship_sessions
+                WHERE mentor_id = ? AND mentee_id = ?
+                ORDER BY proposed_start DESC
+                """,
+                (mentor_id, mentee_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_mentorship_sessions() -> list[Dict[str, Any]]:
+    """List all mentorship session proposals."""
+    if USE_SHEETS_ONLY:
+        try:
+            records = read_from_sheets("mentorship_sessions")
+            return sorted(records, key=lambda x: x.get("proposed_start", ""), reverse=True)
+        except Exception as e:
+            print(f"Failed to read mentorship sessions from sheets: {e}")
+            return []
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM mentorship_sessions
+            ORDER BY proposed_start DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_session_status(session_id: int, status: str) -> None:
+    """Update the status of a session proposal."""
+    payload = {
+        "id": session_id,
+        "status": status,
+        "accepted_at": _now() if status == "accepted" else None,
+    }
+
+    if USE_SHEETS_ONLY:
+        write_to_sheets("mentorship_sessions", "update", payload)
+        return
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE mentorship_sessions
+            SET status = ?, accepted_at = ?
+            WHERE id = ?
+            """,
+            (payload["status"], payload["accepted_at"], session_id),
+        )
+
+
+def list_upcoming_accepted_sessions(within_hours: int = 24) -> list[Dict[str, Any]]:
+    """List accepted sessions occurring within the next N hours with no reminder sent."""
+    now = datetime.utcnow()
+    cutoff = (now + timedelta(hours=within_hours)).isoformat()
+    now_iso = now.isoformat()
+
+    if USE_SHEETS_ONLY:
+        records = read_from_sheets("mentorship_sessions")
+        upcoming = []
+        for record in records:
+            if str(record.get("status")) != "accepted":
+                continue
+            if record.get("reminder_sent_at"):
+                continue
+            start = record.get("proposed_start")
+            if start and now_iso <= start <= cutoff:
+                upcoming.append(record)
+        return upcoming
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM mentorship_sessions
+            WHERE status = 'accepted'
+            AND reminder_sent_at IS NULL
+            AND proposed_start >= ?
+            AND proposed_start <= ?
+            ORDER BY proposed_start ASC
+            """,
+            (now_iso, cutoff),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_session_reminder_sent(session_id: int) -> None:
+    payload = {"id": session_id, "reminder_sent_at": _now()}
+    if USE_SHEETS_ONLY:
+        write_to_sheets("mentorship_sessions", "update", payload)
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE mentorship_sessions
+            SET reminder_sent_at = ?
+            WHERE id = ?
+            """,
+            (payload["reminder_sent_at"], session_id),
+        )
+
+
 def create_password_reset_token(user_id: int) -> str:
     """Create a new password reset token for a user."""
     import secrets
@@ -1793,6 +2017,7 @@ def sync_all_to_sheets() -> dict:
         'mentors': {'synced': 0, 'errors': 0},
         'mentees': {'synced': 0, 'errors': 0},
         'mentorships': {'synced': 0, 'errors': 0},
+        'mentorship_sessions': {'synced': 0, 'errors': 0},
         'sessions': {'synced': 0, 'errors': 0}
     }
     
@@ -1851,6 +2076,19 @@ def sync_all_to_sheets() -> dict:
             except Exception as e:
                 print(f"Error syncing mentorship {mentorship.get('id')}: {e}")
                 results['mentorships']['errors'] += 1
+
+        # Sync mentorship sessions
+        cursor.execute("SELECT * FROM mentorship_sessions")
+        ms_sessions = [dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()]
+        for ms_session in ms_sessions:
+            try:
+                if write_to_sheets('mentorship_sessions', 'insert', ms_session):
+                    results['mentorship_sessions']['synced'] += 1
+                else:
+                    results['mentorship_sessions']['errors'] += 1
+            except Exception as e:
+                print(f"Error syncing mentorship session {ms_session.get('id')}: {e}")
+                results['mentorship_sessions']['errors'] += 1
         
         # Sync sessions
         cursor.execute("SELECT * FROM sessions")
