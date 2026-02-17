@@ -45,12 +45,12 @@ window.parent.postMessage({
 
 JS_SET_COOKIE = """
 <script>
-function setCookie(name, value, days) {
+function setCookie(name, value, days) {{
     const date = new Date();
     date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
     const expires = "expires=" + date.toUTCString();
     document.cookie = name + "=" + value + ";" + expires + ";path=/;SameSite=Lax";
-}
+}}
 setCookie('yln_session', '{cookie_value}', {days});
 </script>
 """
